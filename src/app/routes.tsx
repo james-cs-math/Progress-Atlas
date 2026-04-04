@@ -9,45 +9,51 @@ import { HowToUse } from "./components/HowToUse";
 import { SubscriptionPage } from "./components/SubscriptionPage";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 
-export const router = createBrowserRouter([
+export const router = createBrowserRouter(
+  [
+    {
+      path: "/",
+      element: <RootWrapper />,
+      children: [
+        {
+          index: true,
+          element: <AuthPage />,
+        },
+        {
+          path: "app",
+          element: <ProtectedRoute><RootLayout /></ProtectedRoute>,
+          children: [
+            {
+              index: true,
+              element: <ChatWorkspaceIntegrated />,
+            },
+            {
+              path: "course-selection",
+              element: <CourseSelection />,
+            },
+            {
+              path: "chat",
+              element: <ChatWorkspaceIntegrated />,
+            },
+            {
+              path: "dashboard",
+              element: <DashboardSimplified />,
+            },
+            {
+              path: "how-to-use",
+              element: <HowToUse />,
+            },
+            {
+              path: "subscription",
+              element: <SubscriptionPage />,
+            },
+          ],
+        },
+      ],
+    },
+  ],
   {
-    path: "/",
-    element: <RootWrapper />,
-    children: [
-      {
-        index: true,
-        element: <AuthPage />,
-      },
-      {
-        path: "app",
-        element: <ProtectedRoute><RootLayout /></ProtectedRoute>,
-        children: [
-          {
-            index: true,
-            element: <ChatWorkspaceIntegrated />,
-          },
-          {
-            path: "course-selection",
-            element: <CourseSelection />,
-          },
-          {
-            path: "chat",
-            element: <ChatWorkspaceIntegrated />,
-          },
-          {
-            path: "dashboard",
-            element: <DashboardSimplified />,
-          },
-          {
-            path: "how-to-use",
-            element: <HowToUse />,
-          },
-          {
-            path: "subscription",
-            element: <SubscriptionPage />,
-          },
-        ],
-      },
-    ],
-  },
-]);
+    // This tells React Router to ignore the /Progress-Atlas/ part of the URL
+    basename: "/Progress-Atlas",
+  }
+);
