@@ -10,7 +10,7 @@ import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
 // @ts-ignore
-const logoImage = `${import.meta.env.BASE_URL}logo.png`;
+const logoImage = "/Progress-Atlas/logo.png";
 
 const AuthHeader = memo(() => (
   <CardHeader className="text-center">

@@ -21,7 +21,7 @@ import {
 import { useState } from 'react';
 import { toast } from 'sonner';
 // @ts-ignore
-const logoImage = `${import.meta.env.BASE_URL}logo.png`;
+const logoImage = "/Progress-Atlas/logo.png";
 
 const TIER_CONFIG = {
   euclid: {
