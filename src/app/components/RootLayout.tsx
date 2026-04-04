@@ -109,7 +109,7 @@ export function RootLayout() {
             {/* Logo */}
             <div className="p-6 border-b border-gray-200 text-center">
               <img 
-                src={`${(import.meta as any).env.BASE_URL}logo.png`}
+                src="/Progress-Atlas/logo.png"
                 alt="Progress Atlas Logo" 
                 className="h-8 w-auto" // or whatever classes you have
               />

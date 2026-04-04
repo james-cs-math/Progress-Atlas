@@ -15,15 +15,13 @@ const logoImage = "/Progress-Atlas/logo.png";
 const AuthHeader = memo(() => (
   <CardHeader className="text-center">
     <div className="flex justify-center mb-4">
-      // Inside your component
-      <img 
-        src={`${(import.meta as any).env.BASE_URL}logo.png`}
-        alt="Progress Atlas Logo" 
-        className="h-8 w-auto" // or whatever classes you have
+      <img
+        src={logoImage}
+        alt="Progress Atlas Logo"
+        className="h-8 w-auto"
       />
     </div>
     <CardTitle className="text-2xl">ProgressAtlas</CardTitle>
-    <CardDescription>Your map to improvement.</CardDescription>
   </CardHeader>
 ));
 
