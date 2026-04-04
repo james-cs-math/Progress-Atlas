@@ -111,7 +111,7 @@ export function RootLayout() {
               <img 
                 src={logoImage} 
                 alt="Progress Atlas Logo" 
-                className="h-10 w-auto object-contain" 
+                className="h-16 w-16 object-contain mb-2 mx-auto" 
               />
               <h1 className="text-xl font-bold text-gray-800">ProgressAtlas</h1>
               <p className="text-sm text-gray-500">Your map to improvement.</p>

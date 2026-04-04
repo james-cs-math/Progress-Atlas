@@ -18,7 +18,8 @@ const AuthHeader = memo(() => (
       <img 
         src={logoImage} 
         alt="Progress Atlas Logo" 
-        className="h-10 w-auto object-contain" 
+        className="h-32 w-32 object-contain" 
+        loading="eager" 
       />
     </div>
     <CardTitle className="text-2xl">ProgressAtlas</CardTitle>
