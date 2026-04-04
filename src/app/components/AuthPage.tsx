@@ -15,10 +15,10 @@ const logoImage = "/Progress-Atlas/logo.png";
 const AuthHeader = memo(() => (
   <CardHeader className="text-center">
     <div className="flex justify-center mb-4">
-      <img
-        src={logoImage}
-        alt="Progress Atlas Logo"
-        className="h-8 w-auto"
+      <img 
+        src={logoImage} 
+        alt="Progress Atlas Logo" 
+        className="h-10 w-auto object-contain" 
       />
     </div>
     <CardTitle className="text-2xl">ProgressAtlas</CardTitle>
