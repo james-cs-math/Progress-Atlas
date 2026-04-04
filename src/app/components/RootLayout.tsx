@@ -20,7 +20,8 @@ import {
 } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
-const logoImage = "/logo.png";
+// @ts-ignore
+const logoImage = `${import.meta.env.BASE_URL}logo.png`;
 
 const TIER_CONFIG = {
   euclid: {
@@ -107,10 +108,10 @@ export function RootLayout() {
           <div className="flex flex-col h-full">
             {/* Logo */}
             <div className="p-6 border-b border-gray-200 text-center">
-              <img
-                src={logoImage}
-                alt="ProgressAtlas Logo"
-                className="h-16 w-16 object-contain mb-2 mx-auto"
+              <img 
+                src={`${(import.meta as any).env.BASE_URL}logo.png`}
+                alt="Progress Atlas Logo" 
+                className="h-8 w-auto" // or whatever classes you have
               />
               <h1 className="text-xl font-bold text-gray-800">ProgressAtlas</h1>
               <p className="text-sm text-gray-500">Your map to improvement.</p>

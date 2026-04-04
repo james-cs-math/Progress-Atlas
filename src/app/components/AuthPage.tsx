@@ -9,12 +9,18 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
-const logoImage = "/logo.png";
+// @ts-ignore
+const logoImage = `${import.meta.env.BASE_URL}logo.png`;
 
 const AuthHeader = memo(() => (
   <CardHeader className="text-center">
     <div className="flex justify-center mb-4">
-      <img src={logoImage} alt="Logo" className="h-32 w-32 object-contain" loading="eager" />
+      // Inside your component
+      <img 
+        src={`${(import.meta as any).env.BASE_URL}logo.png`}
+        alt="Progress Atlas Logo" 
+        className="h-8 w-auto" // or whatever classes you have
+      />
     </div>
     <CardTitle className="text-2xl">ProgressAtlas</CardTitle>
     <CardDescription>Your map to improvement.</CardDescription>
