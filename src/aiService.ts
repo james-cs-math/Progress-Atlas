@@ -6,241 +6,205 @@ if (!GROQ_API_KEY) {
   console.error("GROQ_API_KEY is missing! Make sure it is in your .env file and starts with VITE_");
 }
 
-// ─────────────────────────────────────────────
-// GRADING HELPER
-// Normalizes a LaTeX/text answer string so that
-// minor formatting differences don't cause false negatives.
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// GRADING HELPERS
+// ─────────────────────────────────────────────────────────────────
+
 export function normalizeAnswer(raw: string): string {
-  return raw
-    .trim()
-    // Strip wrapping $...$ or $$...$$ delimiters
-    .replace(/^\$\$?([\s\S]*?)\$\$?$/, "$1")
-    // Remove all whitespace
-    .replace(/\s+/g, "")
-    // Lowercase
-    .toLowerCase();
+  return (
+    raw
+      .trim()
+      .replace(/^\$\$?([\s\S]*?)\$\$?$/, "$1")
+      .replace(/\s+/g, "")
+      .toLowerCase()
+  );
 }
 
 export function answersMatch(userAnswer: string, correctAnswer: string): boolean {
   return normalizeAnswer(userAnswer) === normalizeAnswer(correctAnswer);
 }
 
-// ─────────────────────────────────────────────
-// PROMPT BUILDERS — one per question type
-// Keeping them separate eliminates cross-type bleed.
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// LATEX REPAIR
+//
+// llama-3.1-8b-instant emits bare LaTeX backslashes inside JSON strings,
+// e.g. "$\frac{3}{2}$". JSON treats \f as a form-feed — either a parse
+// error or a silently dropped backslash, both of which break rendering.
+//
+// This function walks the raw string BEFORE JSON.parse and doubles any
+// lone backslash that isn't part of a valid JSON escape sequence.
+// ─────────────────────────────────────────────────────────────────
+function repairLatexInJsonString(raw: string): string {
+  const VALID_JSON_ESCAPES = new Set(['"', '\\', 'n', 't', 'r', '/', 'b', 'f']);
+  let out = "";
+  let i = 0;
+  const len = raw.length;
+
+  while (i < len) {
+    if (raw[i] !== '"') { out += raw[i++]; continue; }
+
+    // Enter a JSON string
+    out += '"';
+    i++;
+
+    while (i < len) {
+      const ch = raw[i];
+
+      if (ch === '"') { out += '"'; i++; break; }  // end of string
+
+      if (ch === "\\") {
+        const next = i + 1 < len ? raw[i + 1] : "";
+        if (next === "\\") {
+          // Already doubled \\
+          out += "\\\\"; i += 2;
+        } else if (VALID_JSON_ESCAPES.has(next)) {
+          // Recognised JSON escape: \", \n, \t, \r, \/, \b, \f
+          out += ch + next; i += 2;
+        } else if (next === "u" && i + 5 < len) {
+          // Unicode escape \uXXXX
+          out += raw.slice(i, i + 6); i += 6;
+        } else {
+          // Bare LaTeX backslash — double it so JSON.parse preserves it
+          out += "\\\\"; i++;
+        }
+        continue;
+      }
+
+      out += ch; i++;
+    }
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// PROMPT BUILDER — one type block injected per request
+// ─────────────────────────────────────────────────────────────────
 function buildPrompt(course: string, topic: string, type: string, count: number): string {
+
   const latexRules = `
-LATEX RULES — NON-NEGOTIABLE
-• Every math expression MUST be wrapped in single dollar signs: $expression$
-• Inside JSON strings, every backslash MUST be doubled:
-    LaTeX \\frac  →  JSON "\\\\frac"
-    LaTeX \\sqrt  →  JSON "\\\\sqrt"
-    LaTeX \\int   →  JSON "\\\\int"
-    LaTeX \\sum   →  JSON "\\\\sum"
-    LaTeX \\cdot  →  JSON "\\\\cdot"
-    LaTeX \\pi    →  JSON "\\\\pi"
-• Example of a correct fraction in JSON:
-    "questionText": "Simplify $\\\\frac{3}{4} + \\\\frac{1}{2}$"
-• NEVER use plain Unicode math symbols: ×  ÷  √  π  ∑  ≠  ≤  ≥
-  Use LaTeX commands instead: \\times  \\div  \\sqrt{}  \\pi  \\sum  \\neq  \\leq  \\geq
-• NEVER use markdown, bullet points, asterisks, dashes, or any box-drawing characters
-  (─ │ ┌ ┐ └ ┘ ━ ┃ etc.) anywhere in the output — not inside strings, not outside them.
+LATEX ENCODING — NON-NEGOTIABLE
+• Wrap EVERY math expression in single dollar signs: $expression$
+• Every LaTeX backslash MUST be written as TWO backslashes inside a JSON string:
+    \\frac  →  \\\\frac      \\sqrt  →  \\\\sqrt
+    \\lim   →  \\\\lim       \\to    →  \\\\to
+    \\int   →  \\\\int       \\sum   →  \\\\sum
+    \\infty →  \\\\infty     \\pi    →  \\\\pi
+    \\cdot  →  \\\\cdot      \\times →  \\\\times
+• Correct example:  "Find $\\\\lim_{x \\\\to 2}(x^2 - 1)$"
+• NEVER use Unicode math symbols (×  ÷  √  π  ∑  ∞  ≠  ≤  ≥). Use LaTeX only.
 `;
 
   const outputRules = `
-OUTPUT RULES — NON-NEGOTIABLE
-• Output ONLY the raw JSON object. No text before it. No text after it.
-• No markdown code fences (\`\`\`json ... \`\`\`).
-• No comments, no explanations, no preamble.
-• The "explanation" field MUST:
-    - Be non-empty.
-    - Confirm that the correctAnswer IS correct (never contradict it).
-    - Show the derivation or reasoning using LaTeX where needed.
-    - NOT say the answer is wrong, uncertain, or "could also be".
+OUTPUT FORMAT — NON-NEGOTIABLE
+• Output ONLY the raw JSON object. Nothing before it. Nothing after it.
+• No markdown code fences, no comments, no prose outside JSON.
+• NEVER use box-drawing characters (─ │ ┌ ┐ └ ┘ ━ ┃ ═ ╔ etc.) anywhere.
+• NEVER use asterisks or markdown formatting inside string values.
 `;
 
-  const accuracy = `
-ACCURACY RULES — NON-NEGOTIABLE
-• Solve the problem completely BEFORE writing any field.
-• The correctAnswer MUST equal the computed result exactly.
-• For multiple-choice: the correct option's value MUST match correctAnswer's key.
-• Verify: re-read correctAnswer and explanation — they must agree.
+  const accuracyRules = `
+MATHEMATICAL ACCURACY — NON-NEGOTIABLE
+1. Solve the problem fully before writing ANY field.
+2. correctAnswer = the exact, fully simplified computed result.
+3. The correct option's VALUE must equal the fully simplified result.
+4. explanation must CONFIRM correctAnswer is right. It must NEVER contradict it.
+5. Re-check: correctAnswer, correct option value, and explanation must all agree.
+
+Simplification rules:
+• Reduce all fractions: $\\\\frac{4}{1}$ → write as $4$ (not as a fraction)
+• $\\\\frac{6}{3}$ → $2$,  $\\\\frac{0}{x}$ → $0$
+• For removable discontinuities (like $\\\\frac{x^2-4}{x-2}$ at x=2), factor and cancel — never give ∞.
+• ALL option values must be formatted consistently — if any uses $...$, ALL must use $...$.
 `;
 
-  const schema = `
-REQUIRED JSON SCHEMA
-{
-  "questions": [
-    {
-      "questionText":  "<string>",
-      "answerFormat":  "${type}",
-      "options":       <see type rules below>,
-      "correctAnswer": "<string>",
-      "explanation":   "<non-empty string confirming the correct answer>"
-    }
-  ]
-}
-`;
-
-  // ── Type-specific rules ──────────────────────────────────────────────────
   const typeRules: Record<string, string> = {
+
     "multiple-choice": `
-TYPE RULES — multiple-choice ONLY
-• options: exactly 4 entries with keys "A", "B", "C", "D". Each value is a string.
-• correctAnswer: exactly one of "A", "B", "C", or "D" — the letter only, nothing else.
-• Only one option is correct; the other three are plausible but wrong.
-• Options MUST NOT include "True" / "False" / "Yes" / "No" as answer choices.
-• Options MUST NOT be written as boxes, e.g. [ A ] or (A). Just the value string.
-• The correct option's value must exactly match the computed answer.
+TYPE: multiple-choice
+• options: exactly 4 keys "A" "B" "C" "D". Each value is a plain string.
+• correctAnswer: exactly ONE letter — "A", "B", "C", or "D".
+• The correct option's value MUST equal the fully simplified result.
+• The other three options must be plausible wrong answers.
+• ALL four values must use the same format (all plain, or all wrapped in $...$).
+• NEVER put "True", "False", "Yes", "No" as option values.
+• NEVER include the letter inside the value string (never "A. 5", just "5").
 `,
+
     "true-false": `
-TYPE RULES — true-false ONLY
-• questionText: a mathematical STATEMENT that is either true or false.
-  - It must NOT be phrased as a question.
-  - It must NOT mention "True", "False", "A", or "B" anywhere inside it.
-  - GOOD: "The derivative of $x^2$ is $2x$"
-  - BAD:  "Is the derivative of $x^2$ equal to $2x$? A. True  B. False"
-• options: MUST be exactly { "A": "True", "B": "False" } — no other values.
-• correctAnswer: exactly "A" (if the statement is true) or "B" (if false).
+TYPE: true-false
+• questionText: a math STATEMENT (not a question) — true or false.
+  Must NOT contain "True", "False", "A", or "B".
+  GOOD: "The derivative of $x^2$ is $2x$"
+  BAD:  "Is the derivative of $x^2$ equal to $2x$? A. True  B. False"
+• options: exactly { "A": "True", "B": "False" }.
+• correctAnswer: "A" if statement is true, "B" if false.
 `,
+
     "identification": `
-TYPE RULES — identification ONLY
-• questionText: a fill-in-the-blank or direct question expecting a specific term/value.
-• options: MUST be an empty object {}.
-• correctAnswer: the exact answer — a word, symbol, number, or short expression.
-  - If the answer is a mathematical expression, wrap it in $...$  e.g. "$x^2 + 1$"
-  - If the answer is a plain word or number (e.g. "parabola", "5"), no dollar signs needed.
-  - NEVER leave correctAnswer as an empty string.
-  - NEVER answer with "Yes", "No", "True", or "False".
-• explanation: explain why that specific term or value is the answer.
+TYPE: identification
+• questionText: fill-in-the-blank or direct question with one specific answer.
+• options: empty object {}.
+• correctAnswer:
+  - Math expression → wrap in $...$, e.g. "$x^2 + 1$" or "$\\\\frac{1}{2}$"
+  - Plain word or integer → no dollar signs, e.g. "parabola" or "5"
+  - NEVER empty. NEVER "Yes", "No", "True", "False".
+• explanation: explain why that specific term or value is correct.
 `,
+
     "solution-based": `
-TYPE RULES — solution-based ONLY
-• questionText: a problem requiring a full worked solution (algebra, calculus, etc.).
-• options: MUST be an empty object {}.
-• correctAnswer: the final simplified result only. Wrap in $...$ if mathematical.
-  - Example: "$\\\\frac{1}{2}$" or "$x = 3$" or "6"
-  - NEVER include step-by-step work inside correctAnswer — only the final result.
-• explanation: show EVERY step of the derivation using LaTeX.
-  - The final line of explanation must state that correctAnswer is the result.
-  - NEVER say the answer is wrong or express doubt about it.
+TYPE: solution-based
+• questionText: a math problem requiring a full worked solution.
+• options: empty object {}.
+• correctAnswer: final simplified result ONLY — no steps, no prose.
+  - Wrap in $...$ if mathematical. Simplify completely ($\\\\frac{4}{1}$ → $4$).
+• explanation: show every step with LaTeX. Last sentence must confirm the answer equals correctAnswer.
+  NEVER express doubt about the answer.
 `,
   };
 
-  const selectedTypeRules = typeRules[type] ?? `TYPE: ${type}\noptions: {}\ncorrectAnswer: the answer as a string.`;
+  const selectedTypeRules =
+    typeRules[type] ??
+    `TYPE: ${type}\noptions: {}\ncorrectAnswer: the exact answer as a string.\n`;
+
+  const schema = `
+OUTPUT STRUCTURE:
+{
+  "questions": [
+    {
+      "questionText":  "<the question or statement>",
+      "answerFormat":  "${type}",
+      "options":       <per type rules>,
+      "correctAnswer": "<per type rules>",
+      "explanation":   "<non-empty — CONFIRMS correctAnswer is correct>"
+    }
+  ]
+}`;
 
   return `
-You are a math question generator that outputs only valid JSON.
-Generate ${count} question(s) for the course "${course}" on the topic "${topic}".
-
+You are a precise math question generator. Output ONLY valid JSON.
+Course: "${course}"   Topic: "${topic}"   Type: "${type}"   Count: ${count}
 ${latexRules}
-
 ${selectedTypeRules}
-
-${accuracy}
-
+${accuracyRules}
 ${outputRules}
-
 ${schema}
 
 Generate exactly ${count} question(s). Output only the JSON.
 `.trim();
 }
 
-// ─────────────────────────────────────────────
-// LATEX REPAIR
-// The model (llama-3.1-8b-instant) frequently produces
-// single-escaped backslashes (\frac) in JSON strings instead
-// of the required double-escaped form (\\frac). This causes
-// the JSON parser to silently drop the backslash, turning
-// \frac{3}{2} into frac{3}{2} and \lim into lim — which then
-// renders as plain broken text.
-//
-// Strategy: work on the raw JSON *string* before parsing.
-// We find every $...$ block inside a JSON string value and
-// re-escape any single backslash that isn't already doubled.
-// ─────────────────────────────────────────────
-
-/**
- * Given a raw JSON string from the model, find all LaTeX
- * expressions inside $...$ delimiters and ensure every
- * backslash is properly doubled so JSON.parse won't strip them.
- */
-function repairLatexInJsonString(raw: string): string {
-  // We operate character-by-character so we can track whether
-  // we're inside a JSON string and inside a $...$ block.
-  let result = "";
-  let i = 0;
-  const len = raw.length;
-
-  while (i < len) {
-    // ── Enter a JSON string value ──────────────────────────
-    if (raw[i] === '"') {
-      result += '"';
-      i++;
-      let inDollar = false;
-
-      while (i < len) {
-        const ch = raw[i];
-
-        // End of JSON string (unescaped quote)
-        if (ch === '"' && raw[i - 1] !== "\\") {
-          result += '"';
-          i++;
-          break;
-        }
-
-        // Track $...$ delimiters (double $$ treated as one unit)
-        if (ch === "$") {
-          inDollar = !inDollar;
-          result += ch;
-          i++;
-          continue;
-        }
-
-        // Inside a LaTeX block — fix single backslashes
-        if (inDollar && ch === "\\") {
-          const next = raw[i + 1];
-          if (next === "\\") {
-            // Already doubled — keep as-is and skip both chars
-            result += "\\\\";
-            i += 2;
-          } else {
-            // Single backslash — double it so JSON.parse keeps it
-            result += "\\\\";
-            i++;
-          }
-          continue;
-        }
-
-        result += ch;
-        i++;
-      }
-    } else {
-      result += raw[i];
-      i++;
-    }
-  }
-
-  return result;
-}
-
-// ─────────────────────────────────────────────
-// POST-PROCESSING
-// Ensures correctAnswer always has $...$ for math types,
-// and explanation never contradicts the answer.
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// POST-PROCESSING — safety net after parsing
+// ─────────────────────────────────────────────────────────────────
 function postProcess(questions: any[], type: string): any[] {
   return questions.map((q: any) => {
     const explanation: string = (
       q.explanation || q.solution || q.reasoning || q.rationale || ""
     ).trim();
 
-    // For identification and solution-based, if correctAnswer looks like a
-    // math expression but is missing $...$, wrap it.
     let correctAnswer: string = (q.correctAnswer ?? "").trim();
+
+    // Add $...$ if the answer looks mathematical but is missing delimiters
     if (
       (type === "identification" || type === "solution-based") &&
       correctAnswer &&
@@ -250,6 +214,11 @@ function postProcess(questions: any[], type: string): any[] {
       correctAnswer = `$${correctAnswer}$`;
     }
 
+    // Simplify trivial fractions the model still writes in fraction form
+    correctAnswer = correctAnswer
+      .replace(/\$\\frac\{(\d+)\}\{1\}\$/g, "$$$1$")
+      .replace(/\$\\frac\{0\}\{[^}]+\}\$/g, "$0$");
+
     return {
       ...q,
       correctAnswer,
@@ -258,9 +227,9 @@ function postProcess(questions: any[], type: string): any[] {
   });
 }
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
 // MAIN SERVICE
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
 export const aiService = {
   async ask(course: string, topic: string, type: string, count: number) {
     const prompt = buildPrompt(course, topic, type, count);
@@ -278,17 +247,17 @@ export const aiService = {
             {
               role: "system",
               content: [
-                "You are a math question generator.",
-                "You output ONLY valid JSON — no markdown, no code fences, no prose.",
-                "You NEVER use box-drawing characters or Unicode symbols in output.",
-                "You ALWAYS solve the problem before writing the answer.",
-                "Your explanation ALWAYS confirms the correctAnswer is correct.",
-                `You are generating questions of type: ${type} — follow ONLY the rules for that type.`,
+                `You generate ${type} math questions as pure JSON.`,
+                "No markdown. No code fences. No prose outside JSON.",
+                "No box-drawing characters. No Unicode math symbols.",
+                "Solve every problem before writing the answer.",
+                "explanation always confirms correctAnswer — never contradicts it.",
+                "All option values use the same format (all plain or all LaTeX $...$).",
               ].join(" "),
             },
             { role: "user", content: prompt },
           ],
-          temperature: 0.7,
+          temperature: 0.65,
           response_format: { type: "json_object" },
         }),
       });
@@ -301,24 +270,22 @@ export const aiService = {
       const data = await response.json();
       const rawContent: string = data.choices[0].message.content;
 
-      // Step 1 — strip accidental markdown fences
+      // Step 1: strip accidental markdown fences
       const stripped = rawContent.replace(/```json|```/gi, "").trim();
 
-      // Step 2 — repair single-escaped LaTeX backslashes before JSON.parse
-      // silently drops them. Fixes \frac rendering as frac, \lim as lim, etc.
+      // Step 2: repair bare LaTeX backslashes before JSON.parse silently drops them
       const repaired = repairLatexInJsonString(stripped);
 
       let parsed: any;
       try {
         parsed = JSON.parse(repaired);
       } catch (parseErr) {
-        console.warn("repaired JSON failed, falling back:", parseErr);
+        console.warn("Repaired JSON failed, falling back to stripped:", parseErr);
         parsed = JSON.parse(stripped);
       }
 
       const questions: any[] =
-        parsed.questions ||
-        (Array.isArray(parsed) ? parsed : [parsed]);
+        parsed.questions || (Array.isArray(parsed) ? parsed : [parsed]);
 
       return postProcess(questions, type);
     } catch (err) {
