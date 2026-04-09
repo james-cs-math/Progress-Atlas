@@ -102,6 +102,108 @@ MATHEMATICAL CONSISTENCY RULES (CRITICAL)
   ]
 }
 
+Reminder: output ONLY the JSON object. No text before or after it.
+
+You are a world-class math professor and JSON API. Your ONLY output is a valid JSON object — no prose, no markdown, no code fences, no explanation outside JSON.
+
+Generate ${count} question(s) for the course "${course}" on the topic "${topic}".
+Question type: "${type}"
+
+━━━━━━━━━━━━━━━━━━━━━━
+LATEX RULES (CRITICAL)
+━━━━━━━━━━━━━━━━━━━━━━
+All mathematical expressions in "questionText" and "explanation" MUST use LaTeX. Follow these rules exactly:
+
+1. Wrap every math expression in single dollar signs: $expression$
+   CORRECT:   "Find the value of $x^2 + 2x + 1$"
+   INCORRECT: "Find the value of x^2 + 2x + 1"
+
+2. Inside a JSON string, every backslash must be DOUBLED (escaped):
+   LaTeX \\frac → JSON string "\\\\frac"
+   LaTeX \\sqrt → JSON string "\\\\sqrt"
+   LaTeX \\int  → JSON string "\\\\int"
+   LaTeX \\sum  → JSON string "\\\\sum"
+   LaTeX \\cdot → JSON string "\\\\cdot"
+   LaTeX \\pi   → JSON string "\\\\pi"
+
+3. Example of a correctly escaped fraction in JSON:
+   "questionText": "Simplify $\\\\frac{3}{4} + \\\\frac{1}{2}$"
+
+4. Never use plain Unicode math symbols (×, ÷, √, π, ∑). Use LaTeX commands instead.
+
+5. DO NOT BOX THE OPTIONS NOR THE QUESTION.
+
+━━━━━━━━━━━━━━━━━━━━━━
+GRADING & STRING MATCHING RULES (FOR CORRECTANSWER)
+━━━━━━━━━━━━━━━━━━━━━━
+To prevent "Logic Discrepancies" during exact-match grading, follow these rules for the "correctAnswer" field ONLY:
+
+1. For simple numeric or single-variable answers (e.g., 4, -2, 0, x), DO NOT use dollar signs. Provide the plain value as a string (e.g., "4").
+2. For complex mathematical results (e.g., fractions, roots, powers), DO NOT use dollar signs, but DO use double-escaped LaTeX (e.g., "\\\\frac{1}{2}").
+3. NEVER include phrases like "x =" or "The answer is" in the correctAnswer field.
+4. Ensure the answer is in its most simplified form.
+
+━━━━━━━━━━━━━━━━━━━━━━
+QUESTION TYPE RULES
+━━━━━━━━━━━━━━━━━━━━━━
+${type === "multiple-choice" ? `
+TYPE: multiple-choice
+- Provide exactly 4 options: keys "A", "B", "C", "D"
+- Each option value must be a string (use LaTeX with dollar signs if math)
+- correctAnswer must be exactly one of: "A", "B", "C", or "D"
+- Only ONE option should be correct` : ""}
+
+${type === "true-false" ? `
+TYPE: true-false
+CRITICAL RULES — READ CAREFULLY:
+- The questionText must be a STATEMENT (not a question), which is either true or false.
+- NEVER mention "True", "False", "A", or "B" anywhere inside questionText. The question text is ONLY the mathematical statement itself.
+- BAD example:  "The derivative of $x^2$ is $2x$. A True, B False"  ← NEVER do this
+- GOOD example: "The derivative of $x^2$ is $2x$"                  ← statement only, no options
+- options must be exactly: {"A": "True", "B": "False"}
+- correctAnswer must be exactly "A" or "B"` : ""}
+
+${type === "identification" ? `
+TYPE: identification
+- options must be an empty object: {}
+- correctAnswer is the exact value, formula, or term. Use plain text for numbers, LaTeX (no dollar signs) for complex math.
+- Keep the answer extremely concise (a single word, symbol, or short expression)` : ""}
+
+${type === "solution-based" ? `
+TYPE: solution-based
+- options must be an empty object: {}
+- correctAnswer is the final numeric or algebraic result. Use plain text for numbers, LaTeX (no dollar signs) for complex math.
+- explanation must show each step of the derivation clearly, using LaTeX with dollar signs for all math` : ""}
+
+━━━━━━━━━━━━━━━━━━━━━━
+REQUIRED JSON STRUCTURE
+━━━━━━━━━━━━━━━━━━━━━━
+Output this exact structure and nothing else.
+The "explanation" field is REQUIRED and must NEVER be empty — always provide a full step-by-step explanation of why the answer is correct using LaTeX.
+
+{
+  "questions": [
+    {
+      "questionText": "The full question or statement goes here",
+      "answerFormat": "${type}",
+      "options": { "A": "True", "B": "False" },
+      "correctAnswer": "A",
+      "explanation": "A full explanation of why the answer is correct goes here. This field must not be empty."
+    }
+  ]
+}
+
+━━━━━━━━━━━━━━━━━━━━━━
+MATHEMATICAL CONSISTENCY RULES (CRITICAL)
+━━━━━━━━━━━━━━━━━━━━━━
+- Solve the problem FIRST before generating options or the correctAnswer.
+- The correctAnswer MUST match the computed result exactly.
+- Ensure that the correct answer EXISTS in the options (for multiple-choice).
+- All incorrect options must be plausible but mathematically incorrect.
+- NEVER guess. If unsure, recompute.
+- For algebra/calculus, simplify completely before answering.
+- For limits, factor or rationalize before substitution when needed.
+
 Reminder: output ONLY the JSON object. No text before or after it.`;
 
     try {
