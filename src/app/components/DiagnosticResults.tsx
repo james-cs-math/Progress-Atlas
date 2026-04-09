@@ -7,16 +7,15 @@ import { InlineMath, BlockMath } from 'react-katex';
 import { 
   Target, Award, CheckCircle, XCircle, 
   BookOpen, Brain, Lock, RefreshCw, ListChecks, 
-  ChevronDown, ChevronUp, Clock, Sparkles
+  ChevronDown, ChevronUp, Clock, Sparkles,
+  AlertCircle, CircleDot
 } from 'lucide-react';
 
 const TIER_RANK = { euclid: 0, aristotle: 1, plato: 2, socrates: 3 };
 
 // ─── Text Renderer ────────────────────────────────────────────────────────────
-// Coerce option values that are pure math fragments into a single inline math block
 const sanitizeOption = (text: string): string => {
   const trimmed = text.trim();
-  // If it contains newlines and looks like broken LaTeX, collapse into one $...$ block
   if (trimmed.includes('\n') && !trimmed.startsWith('$')) {
     const joined = trimmed.split('\n').map(l => l.trim()).filter(Boolean).join(' ');
     return `$${joined}$`;
@@ -40,6 +39,90 @@ const renderText = (text?: string): React.ReactNode => {
   );
 };
 
+// ─── Logic Error Analysis Panel ───────────────────────────────────────────────
+// Shown inside each question card. Requires Plato tier minimum.
+interface LogicErrorPanelProps {
+  calculationSlip?: string;
+  conceptualGap?: string;
+  isCorrect: boolean;
+  hasAccess: boolean;
+}
+
+function LogicErrorPanel({ calculationSlip, conceptualGap, isCorrect, hasAccess }: LogicErrorPanelProps) {
+  // If the answer was correct and no error data exists, show a clean "no errors" state
+  if (isCorrect && !calculationSlip && !conceptualGap) {
+    return (
+      <div className="flex items-center gap-2 px-5 py-4 bg-emerald-50 rounded-2xl border border-emerald-100">
+        <CheckCircle size={14} className="text-emerald-500 shrink-0" />
+        <p className="text-xs font-black uppercase tracking-widest text-emerald-700">No logic errors detected</p>
+      </div>
+    );
+  }
+
+  // Locked state for users below Plato
+  if (!hasAccess) {
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {/* Calculation Slip — locked */}
+        <div className="p-4 rounded-2xl border border-amber-100 bg-amber-50/40 opacity-60 select-none">
+          <div className="flex items-center gap-2 mb-2">
+            <AlertCircle size={13} className="text-amber-600 shrink-0" />
+            <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">Calculation Slip</p>
+            <Lock size={11} className="ml-auto text-amber-400" />
+          </div>
+          <div className="h-3 bg-amber-200/60 rounded-full w-3/4 mb-1" />
+          <div className="h-3 bg-amber-200/40 rounded-full w-1/2" />
+        </div>
+        {/* Conceptual Gap — locked */}
+        <div className="p-4 rounded-2xl border border-indigo-100 bg-indigo-50/40 opacity-60 select-none">
+          <div className="flex items-center gap-2 mb-2">
+            <CircleDot size={13} className="text-indigo-600 shrink-0" />
+            <p className="text-[10px] font-black uppercase tracking-widest text-indigo-700">Conceptual Gap</p>
+            <Lock size={11} className="ml-auto text-indigo-400" />
+          </div>
+          <div className="h-3 bg-indigo-200/60 rounded-full w-3/4 mb-1" />
+          <div className="h-3 bg-indigo-200/40 rounded-full w-1/2" />
+        </div>
+        <p className="col-span-full text-[10px] font-bold text-center text-slate-400 uppercase tracking-widest pt-1">
+          Plato tier required to view logic error analysis
+        </p>
+      </div>
+    );
+  }
+
+  // Full display for Plato+ users
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      {/* Calculation Slip */}
+      <div className={`p-4 rounded-2xl border ${calculationSlip ? 'border-amber-200 bg-amber-50' : 'border-slate-100 bg-slate-50/50'}`}>
+        <div className="flex items-center gap-2 mb-2">
+          <AlertCircle size={13} className={calculationSlip ? 'text-amber-600 shrink-0' : 'text-slate-300 shrink-0'} />
+          <p className={`text-[10px] font-black uppercase tracking-widest ${calculationSlip ? 'text-amber-800' : 'text-slate-400'}`}>
+            Calculation Slip
+          </p>
+        </div>
+        <p className={`text-xs font-semibold leading-relaxed ${calculationSlip ? 'text-amber-700' : 'text-slate-400 italic'}`}>
+          {calculationSlip ?? 'None detected'}
+        </p>
+      </div>
+
+      {/* Conceptual Gap */}
+      <div className={`p-4 rounded-2xl border ${conceptualGap ? 'border-indigo-200 bg-indigo-50' : 'border-slate-100 bg-slate-50/50'}`}>
+        <div className="flex items-center gap-2 mb-2">
+          <CircleDot size={13} className={conceptualGap ? 'text-indigo-600 shrink-0' : 'text-slate-300 shrink-0'} />
+          <p className={`text-[10px] font-black uppercase tracking-widest ${conceptualGap ? 'text-indigo-800' : 'text-slate-400'}`}>
+            Conceptual Gap
+          </p>
+        </div>
+        <p className={`text-xs font-semibold leading-relaxed ${conceptualGap ? 'text-indigo-700' : 'text-slate-400 italic'}`}>
+          {conceptualGap ?? 'None detected'}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Component ────────────────────────────────────────────────────────────
 export function DiagnosticResults() {
   const { currentTier } = useTier();
   const [diagnosticTests, setDiagnosticTests] = useState<any[]>([]);
@@ -48,7 +131,6 @@ export function DiagnosticResults() {
 
   useEffect(() => {
     loadDiagnosticResults();
-    // Re-load when a new diagnostic is saved
     const onUpdate = () => loadDiagnosticResults();
     window.addEventListener('atlas_usage_updated', onUpdate);
     return () => window.removeEventListener('atlas_usage_updated', onUpdate);
@@ -57,7 +139,6 @@ export function DiagnosticResults() {
   const loadDiagnosticResults = () => {
     try {
       const all = JSON.parse(localStorage.getItem('atlas_test_history') || '[]');
-      // Only show completed diagnostics (not practice, not incomplete placeholders)
       const completed = all.filter((s: any) => s.setType === 'diagnostic' && s.results?.completed === true);
       setDiagnosticTests(
         completed.sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
@@ -72,7 +153,6 @@ export function DiagnosticResults() {
   const hasAccess = (required: keyof typeof TIER_RANK) =>
     TIER_RANK[currentTier as keyof typeof TIER_RANK] >= TIER_RANK[required];
 
-  // Build topic accuracy map for recommendations
   const topicAccuracy: Record<string, { total: number; correct: number }> = {};
   diagnosticTests.forEach(test => {
     if (!topicAccuracy[test.topic]) topicAccuracy[test.topic] = { total: 0, correct: 0 };
@@ -257,6 +337,26 @@ export function DiagnosticResults() {
                                     : renderText(resp.correctAnswer)}
                                 </div>
                               </div>
+                            </div>
+
+                            {/* ── Logic Error Analysis ─────────────────────────────
+                                Plato+: full panel with Calculation Slip & Conceptual Gap
+                                Below Plato: blurred placeholder rows with lock icon     */}
+                            <div>
+                              <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3 flex items-center gap-1">
+                                <AlertCircle size={12} /> Logic Error Analysis
+                                {!hasAccess('plato') && (
+                                  <span className="ml-auto text-[9px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-black uppercase tracking-widest">
+                                    Plato+
+                                  </span>
+                                )}
+                              </p>
+                              <LogicErrorPanel
+                                calculationSlip={resp.calculationSlip}
+                                conceptualGap={resp.conceptualGap}
+                                isCorrect={resp.isCorrect}
+                                hasAccess={hasAccess('plato')}
+                              />
                             </div>
 
                             {/* AI Feedback for identification/solution */}
