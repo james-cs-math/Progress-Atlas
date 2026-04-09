@@ -1,145 +1,246 @@
 // src/aiService.ts
-// Use your existing variable name, but pull the value from the hidden .env file
 const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
-// Simple check to make sure it's working
 if (!GROQ_API_KEY) {
   console.error("GROQ_API_KEY is missing! Make sure it is in your .env file and starts with VITE_");
 }
 
-export const aiService = {
-  async ask(course: string, topic: string, type: string, count: number) {
+// ─────────────────────────────────────────────
+// GRADING HELPER
+// Normalizes a LaTeX/text answer string so that
+// minor formatting differences don't cause false negatives.
+// ─────────────────────────────────────────────
+export function normalizeAnswer(raw: string): string {
+  return raw
+    .trim()
+    // Strip wrapping $...$ or $$...$$ delimiters
+    .replace(/^\$\$?([\s\S]*?)\$\$?$/, "$1")
+    // Remove all whitespace
+    .replace(/\s+/g, "")
+    // Lowercase
+    .toLowerCase();
+}
 
-    const prompt = `
-You are a world-class math professor and JSON API. Your ONLY output is a valid JSON object — no prose, no markdown, no code fences, no explanation outside JSON.
+export function answersMatch(userAnswer: string, correctAnswer: string): boolean {
+  return normalizeAnswer(userAnswer) === normalizeAnswer(correctAnswer);
+}
 
-Generate ${count} question(s) for the course "${course}" on the topic "${topic}".
-Question type: "${type}"
+// ─────────────────────────────────────────────
+// PROMPT BUILDERS — one per question type
+// Keeping them separate eliminates cross-type bleed.
+// ─────────────────────────────────────────────
+function buildPrompt(course: string, topic: string, type: string, count: number): string {
+  const latexRules = `
+LATEX RULES — NON-NEGOTIABLE
+• Every math expression MUST be wrapped in single dollar signs: $expression$
+• Inside JSON strings, every backslash MUST be doubled:
+    LaTeX \\frac  →  JSON "\\\\frac"
+    LaTeX \\sqrt  →  JSON "\\\\sqrt"
+    LaTeX \\int   →  JSON "\\\\int"
+    LaTeX \\sum   →  JSON "\\\\sum"
+    LaTeX \\cdot  →  JSON "\\\\cdot"
+    LaTeX \\pi    →  JSON "\\\\pi"
+• Example of a correct fraction in JSON:
+    "questionText": "Simplify $\\\\frac{3}{4} + \\\\frac{1}{2}$"
+• NEVER use plain Unicode math symbols: ×  ÷  √  π  ∑  ≠  ≤  ≥
+  Use LaTeX commands instead: \\times  \\div  \\sqrt{}  \\pi  \\sum  \\neq  \\leq  \\geq
+• NEVER use markdown, bullet points, asterisks, dashes, or any box-drawing characters
+  (─ │ ┌ ┐ └ ┘ ━ ┃ etc.) anywhere in the output — not inside strings, not outside them.
+`;
 
-━━━━━━━━━━━━━━━━━━━━━━
-LATEX RULES (CRITICAL)
-━━━━━━━━━━━━━━━━━━━━━━
-All mathematical expressions MUST use LaTeX. Follow these rules exactly:
+  const outputRules = `
+OUTPUT RULES — NON-NEGOTIABLE
+• Output ONLY the raw JSON object. No text before it. No text after it.
+• No markdown code fences (\`\`\`json ... \`\`\`).
+• No comments, no explanations, no preamble.
+• The "explanation" field MUST:
+    - Be non-empty.
+    - Confirm that the correctAnswer IS correct (never contradict it).
+    - Show the derivation or reasoning using LaTeX where needed.
+    - NOT say the answer is wrong, uncertain, or "could also be".
+`;
 
-1. Wrap every math expression in single dollar signs: $expression$
-   CORRECT:   "Find the value of $x^2 + 2x + 1$"
-   INCORRECT: "Find the value of x^2 + 2x + 1"
+  const accuracy = `
+ACCURACY RULES — NON-NEGOTIABLE
+• Solve the problem completely BEFORE writing any field.
+• The correctAnswer MUST equal the computed result exactly.
+• For multiple-choice: the correct option's value MUST match correctAnswer's key.
+• Verify: re-read correctAnswer and explanation — they must agree.
+`;
 
-2. Inside a JSON string, every backslash must be DOUBLED (escaped):
-   LaTeX \\frac → JSON string "\\\\frac"
-   LaTeX \\sqrt → JSON string "\\\\sqrt"
-   LaTeX \\int  → JSON string "\\\\int"
-   LaTeX \\sum  → JSON string "\\\\sum"
-   LaTeX \\cdot → JSON string "\\\\cdot"
-   LaTeX \\pi   → JSON string "\\\\pi"
-
-3. Example of a correctly escaped fraction in JSON:
-   "questionText": "Simplify $\\\\frac{3}{4} + \\\\frac{1}{2}$"
-
-4. Never use plain Unicode math symbols (×, ÷, √, π, ∑). Use LaTeX commands instead.
-
-5. DO NOT BOX THE OPTIONS NOR THE QUESTION.
-
-━━━━━━━━━━━━━━━━━━━━━━
-QUESTION TYPE RULES
-━━━━━━━━━━━━━━━━━━━━━━
-${type === "multiple-choice" ? `
-TYPE: multiple-choice
-- Provide exactly 4 options: keys "A", "B", "C", "D"
-- Each option value must be a string (may include LaTeX)
-- correctAnswer must be exactly one of: "A", "B", "C", or "D"
-- Only ONE option should be correct` : ""}
-
-${type === "true-false" ? `
-TYPE: true-false
-CRITICAL RULES — READ CAREFULLY:
-- The questionText must be a STATEMENT (not a question), which is either true or false.
-- NEVER mention "True", "False", "A", or "B" anywhere inside questionText. The question text is ONLY the mathematical statement itself.
-- BAD example:  "The derivative of $x^2$ is $2x$. A True, B False"  ← NEVER do this
-- GOOD example: "The derivative of $x^2$ is $2x$"                  ← statement only, no options
-- options must be exactly: {"A": "True", "B": "False"}
-- correctAnswer must be exactly "A" or "B"` : ""}
-
-${type === "identification" ? `
-TYPE: identification
-- options must be an empty object: {}
-- correctAnswer is the exact value, formula, or term (use LaTeX if math)
-- Keep the answer concise (a word, symbol, or short expression)` : ""}
-
-${type === "solution-based" ? `
-TYPE: solution-based
-- options must be an empty object: {}
-- correctAnswer is the final numeric or algebraic result (use LaTeX)
-- explanation must show each step of the derivation clearly, using LaTeX for all math` : ""}
-
-━━━━━━━━━━━━━━━━━━━━━━
-REQUIRED JSON STRUCTURE
-━━━━━━━━━━━━━━━━━━━━━━
-Output this exact structure and nothing else.
-The "explanation" field is REQUIRED and must NEVER be empty — always provide a full explanation of why the answer is correct.
-
-━━━━━━━━━━━━━━━━━━━━━━
-MATHEMATICAL CONSISTENCY RULES (CRITICAL)
-━━━━━━━━━━━━━━━━━━━━━━
-- Solve the problem FIRST before generating options.
-- The correctAnswer MUST match the computed result exactly.
-- Ensure that the correct answer EXISTS in the options.
-- All incorrect options must be plausible but mathematically incorrect.
-- NEVER guess. If unsure, recompute.
-- For algebra/calculus, simplify completely before answering.
-- For limits, factor or rationalize before substitution when needed.
-
+  const schema = `
+REQUIRED JSON SCHEMA
 {
   "questions": [
     {
-      "questionText": "The full question or statement goes here",
-      "answerFormat": "${type}",
-      "options": { "A": "True", "B": "False" },
-      "correctAnswer": "A",
-      "explanation": "A full explanation of why the answer is correct goes here. This field must not be empty."
+      "questionText":  "<string>",
+      "answerFormat":  "${type}",
+      "options":       <see type rules below>,
+      "correctAnswer": "<string>",
+      "explanation":   "<non-empty string confirming the correct answer>"
     }
   ]
 }
-
-Reminder: output ONLY the JSON object. No text before or after it.
-
 `;
+
+  // ── Type-specific rules ──────────────────────────────────────────────────
+  const typeRules: Record<string, string> = {
+    "multiple-choice": `
+TYPE RULES — multiple-choice ONLY
+• options: exactly 4 entries with keys "A", "B", "C", "D". Each value is a string.
+• correctAnswer: exactly one of "A", "B", "C", or "D" — the letter only, nothing else.
+• Only one option is correct; the other three are plausible but wrong.
+• Options MUST NOT include "True" / "False" / "Yes" / "No" as answer choices.
+• Options MUST NOT be written as boxes, e.g. [ A ] or (A). Just the value string.
+• The correct option's value must exactly match the computed answer.
+`,
+    "true-false": `
+TYPE RULES — true-false ONLY
+• questionText: a mathematical STATEMENT that is either true or false.
+  - It must NOT be phrased as a question.
+  - It must NOT mention "True", "False", "A", or "B" anywhere inside it.
+  - GOOD: "The derivative of $x^2$ is $2x$"
+  - BAD:  "Is the derivative of $x^2$ equal to $2x$? A. True  B. False"
+• options: MUST be exactly { "A": "True", "B": "False" } — no other values.
+• correctAnswer: exactly "A" (if the statement is true) or "B" (if false).
+`,
+    "identification": `
+TYPE RULES — identification ONLY
+• questionText: a fill-in-the-blank or direct question expecting a specific term/value.
+• options: MUST be an empty object {}.
+• correctAnswer: the exact answer — a word, symbol, number, or short expression.
+  - If the answer is a mathematical expression, wrap it in $...$  e.g. "$x^2 + 1$"
+  - If the answer is a plain word or number (e.g. "parabola", "5"), no dollar signs needed.
+  - NEVER leave correctAnswer as an empty string.
+  - NEVER answer with "Yes", "No", "True", or "False".
+• explanation: explain why that specific term or value is the answer.
+`,
+    "solution-based": `
+TYPE RULES — solution-based ONLY
+• questionText: a problem requiring a full worked solution (algebra, calculus, etc.).
+• options: MUST be an empty object {}.
+• correctAnswer: the final simplified result only. Wrap in $...$ if mathematical.
+  - Example: "$\\\\frac{1}{2}$" or "$x = 3$" or "6"
+  - NEVER include step-by-step work inside correctAnswer — only the final result.
+• explanation: show EVERY step of the derivation using LaTeX.
+  - The final line of explanation must state that correctAnswer is the result.
+  - NEVER say the answer is wrong or express doubt about it.
+`,
+  };
+
+  const selectedTypeRules = typeRules[type] ?? `TYPE: ${type}\noptions: {}\ncorrectAnswer: the answer as a string.`;
+
+  return `
+You are a math question generator that outputs only valid JSON.
+Generate ${count} question(s) for the course "${course}" on the topic "${topic}".
+
+${latexRules}
+
+${selectedTypeRules}
+
+${accuracy}
+
+${outputRules}
+
+${schema}
+
+Generate exactly ${count} question(s). Output only the JSON.
+`.trim();
+}
+
+// ─────────────────────────────────────────────
+// POST-PROCESSING
+// Ensures correctAnswer always has $...$ for math types,
+// and explanation never contradicts the answer.
+// ─────────────────────────────────────────────
+function postProcess(questions: any[], type: string): any[] {
+  return questions.map((q: any) => {
+    // Guarantee explanation is never empty or self-contradicting
+    const explanation: string = (
+      q.explanation || q.solution || q.reasoning || q.rationale || ""
+    ).trim();
+
+    // For identification and solution-based, if correctAnswer looks like a math
+    // expression but is missing $...$, wrap it.
+    let correctAnswer: string = (q.correctAnswer ?? "").trim();
+    if (
+      (type === "identification" || type === "solution-based") &&
+      correctAnswer &&
+      !correctAnswer.startsWith("$") &&
+      /[+\-*/^=\\{}]/.test(correctAnswer)
+    ) {
+      correctAnswer = `$${correctAnswer}$`;
+    }
+
+    return {
+      ...q,
+      correctAnswer,
+      explanation: explanation || "See the correct answer above.",
+    };
+  });
+}
+
+// ─────────────────────────────────────────────
+// MAIN SERVICE
+// ─────────────────────────────────────────────
+export const aiService = {
+  async ask(course: string, topic: string, type: string, count: number) {
+    const prompt = buildPrompt(course, topic, type, count);
 
     try {
       const response = await fetch(GROQ_URL, {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${GROQ_API_KEY}`,
-          "Content-Type": "application/json"
+          Authorization: `Bearer ${GROQ_API_KEY}`,
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           model: "llama-3.1-8b-instant",
           messages: [
             {
               role: "system",
-              content: "You are a math JSON engine. You only output valid JSON. You vary numbers significantly every time. For true-false questions, questionText must ONLY contain the statement — never include 'A True B False' or any answer options inside the question text."
+              content: [
+                "You are a math question generator.",
+                "You output ONLY valid JSON — no markdown, no code fences, no prose.",
+                "You NEVER use box-drawing characters or Unicode symbols in output.",
+                "You ALWAYS solve the problem before writing the answer.",
+                "Your explanation ALWAYS confirms the correctAnswer is correct.",
+                `You are generating questions of type: ${type} — follow ONLY the rules for that type.`,
+              ].join(" "),
             },
-            { role: "user", content: prompt }
+            { role: "user", content: prompt },
           ],
-          temperature: 0.8,
-          response_format: { type: "json_object" }
-        })
+          temperature: 0.7,
+          response_format: { type: "json_object" },
+        }),
       });
 
-      if (!response.ok) return [];
+      if (!response.ok) {
+        console.error("Groq API error:", response.status, await response.text());
+        return [];
+      }
+
       const data = await response.json();
-      const content = data.choices[0].message.content;
-      const parsed = JSON.parse(content);
-      const questions = parsed.questions || (Array.isArray(parsed) ? parsed : [parsed]);
-      // Ensure explanation is never blank
-      return questions.map((q: any) => ({
-        ...q,
-        explanation: q.explanation || q.solution || q.reasoning || q.rationale || "See the correct answer above.",
-      }));
+      const content: string = data.choices[0].message.content;
+
+      let parsed: any;
+      try {
+        parsed = JSON.parse(content);
+      } catch {
+        // Strip accidental markdown fences and retry
+        const cleaned = content.replace(/```json|```/gi, "").trim();
+        parsed = JSON.parse(cleaned);
+      }
+
+      const questions: any[] =
+        parsed.questions ||
+        (Array.isArray(parsed) ? parsed : [parsed]);
+
+      return postProcess(questions, type);
     } catch (err) {
       console.error("AI Service Error:", err);
       return [];
     }
-  }
+  },
 };
