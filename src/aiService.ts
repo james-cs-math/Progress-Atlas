@@ -150,19 +150,96 @@ Generate exactly ${count} question(s). Output only the JSON.
 }
 
 // ─────────────────────────────────────────────
+// LATEX REPAIR
+// The model (llama-3.1-8b-instant) frequently produces
+// single-escaped backslashes (\frac) in JSON strings instead
+// of the required double-escaped form (\\frac). This causes
+// the JSON parser to silently drop the backslash, turning
+// \frac{3}{2} into frac{3}{2} and \lim into lim — which then
+// renders as plain broken text.
+//
+// Strategy: work on the raw JSON *string* before parsing.
+// We find every $...$ block inside a JSON string value and
+// re-escape any single backslash that isn't already doubled.
+// ─────────────────────────────────────────────
+
+/**
+ * Given a raw JSON string from the model, find all LaTeX
+ * expressions inside $...$ delimiters and ensure every
+ * backslash is properly doubled so JSON.parse won't strip them.
+ */
+function repairLatexInJsonString(raw: string): string {
+  // We operate character-by-character so we can track whether
+  // we're inside a JSON string and inside a $...$ block.
+  let result = "";
+  let i = 0;
+  const len = raw.length;
+
+  while (i < len) {
+    // ── Enter a JSON string value ──────────────────────────
+    if (raw[i] === '"') {
+      result += '"';
+      i++;
+      let inDollar = false;
+
+      while (i < len) {
+        const ch = raw[i];
+
+        // End of JSON string (unescaped quote)
+        if (ch === '"' && raw[i - 1] !== "\\") {
+          result += '"';
+          i++;
+          break;
+        }
+
+        // Track $...$ delimiters (double $$ treated as one unit)
+        if (ch === "$") {
+          inDollar = !inDollar;
+          result += ch;
+          i++;
+          continue;
+        }
+
+        // Inside a LaTeX block — fix single backslashes
+        if (inDollar && ch === "\\") {
+          const next = raw[i + 1];
+          if (next === "\\") {
+            // Already doubled — keep as-is and skip both chars
+            result += "\\\\";
+            i += 2;
+          } else {
+            // Single backslash — double it so JSON.parse keeps it
+            result += "\\\\";
+            i++;
+          }
+          continue;
+        }
+
+        result += ch;
+        i++;
+      }
+    } else {
+      result += raw[i];
+      i++;
+    }
+  }
+
+  return result;
+}
+
+// ─────────────────────────────────────────────
 // POST-PROCESSING
 // Ensures correctAnswer always has $...$ for math types,
 // and explanation never contradicts the answer.
 // ─────────────────────────────────────────────
 function postProcess(questions: any[], type: string): any[] {
   return questions.map((q: any) => {
-    // Guarantee explanation is never empty or self-contradicting
     const explanation: string = (
       q.explanation || q.solution || q.reasoning || q.rationale || ""
     ).trim();
 
-    // For identification and solution-based, if correctAnswer looks like a math
-    // expression but is missing $...$, wrap it.
+    // For identification and solution-based, if correctAnswer looks like a
+    // math expression but is missing $...$, wrap it.
     let correctAnswer: string = (q.correctAnswer ?? "").trim();
     if (
       (type === "identification" || type === "solution-based") &&
@@ -222,15 +299,21 @@ export const aiService = {
       }
 
       const data = await response.json();
-      const content: string = data.choices[0].message.content;
+      const rawContent: string = data.choices[0].message.content;
+
+      // Step 1 — strip accidental markdown fences
+      const stripped = rawContent.replace(/```json|```/gi, "").trim();
+
+      // Step 2 — repair single-escaped LaTeX backslashes before JSON.parse
+      // silently drops them. Fixes \frac rendering as frac, \lim as lim, etc.
+      const repaired = repairLatexInJsonString(stripped);
 
       let parsed: any;
       try {
-        parsed = JSON.parse(content);
-      } catch {
-        // Strip accidental markdown fences and retry
-        const cleaned = content.replace(/```json|```/gi, "").trim();
-        parsed = JSON.parse(cleaned);
+        parsed = JSON.parse(repaired);
+      } catch (parseErr) {
+        console.warn("repaired JSON failed, falling back:", parseErr);
+        parsed = JSON.parse(stripped);
       }
 
       const questions: any[] =
