@@ -1,6 +1,12 @@
 // src/aiService.ts
-const GROQ_API_KEY = "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";
+// Use your existing variable name, but pull the value from the hidden .env file
+const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+
+// Simple check to make sure it's working
+if (!GROQ_API_KEY) {
+  console.error("GROQ_API_KEY is missing! Make sure it is in your .env file and starts with VITE_");
+}
 
 export const aiService = {
   async ask(course: string, topic: string, type: string, count: number) {
