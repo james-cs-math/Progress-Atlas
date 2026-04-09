@@ -3,7 +3,7 @@
 // Move this to an environment variable in production
 // e.g. process.env.NEXT_PUBLIC_ANTHROPIC_API_KEY
 // ============================================================
-const ANTHROPIC_API_KEY = "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";
+const ANTHROPIC_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
 // ============================================================
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
