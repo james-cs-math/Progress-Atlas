@@ -42,9 +42,10 @@ jobs:
 
       # --- THIS IS THE CHANGED STEP ---
       - name: Build
-        run: npm run build
-        env:
-          VITE_GROQ_API_KEY: ${{ secrets.VITE_GROQ_API_KEY }}
+        # This creates the .env file on the GitHub server
+        run: |
+          echo "VITE_GROQ_API_KEY=${{ secrets.VITE_GROQ_API_KEY }}" > .env
+          npm run build
       # --------------------------------
 
       - name: Setup Pages
