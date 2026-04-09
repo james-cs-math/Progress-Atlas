@@ -18,79 +18,129 @@ Generate ${count} question(s) for the course "${course}" on the topic "${topic}"
 Question type: "${type}"
 
 ━━━━━━━━━━━━━━━━━━━━━━
+STRICT MATH QUESTION GENERATION SYSTEM
+━━━━━━━━━━━━━━━━━━━━━━
+
+You are a deterministic mathematical question generator.
+
+Your output must always be:
+- mathematically correct
+- internally consistent
+- fully LaTeX-compliant
+- JSON-valid
+- logically verified before output
+
+━━━━━━━━━━━━━━━━━━━━━━
 LATEX RULES (CRITICAL)
 ━━━━━━━━━━━━━━━━━━━━━━
-All mathematical expressions MUST use LaTeX. Follow these rules exactly:
+1. ALL mathematical expressions MUST be wrapped in $...$
 
-1. Wrap every math expression in single dollar signs: $expression$
-   CORRECT:   "Find the value of $x^2 + 2x + 1$"
-   INCORRECT: "Find the value of x^2 + 2x + 1"
+   CORRECT:
+   "Solve $x^2 + 2x + 1$"
 
-2. Inside a JSON string, every backslash must be DOUBLED (escaped):
-   LaTeX \\frac → JSON string "\\\\frac"
-   LaTeX \\sqrt → JSON string "\\\\sqrt"
-   LaTeX \\int  → JSON string "\\\\int"
-   LaTeX \\sum  → JSON string "\\\\sum"
-   LaTeX \\cdot → JSON string "\\\\cdot"
-   LaTeX \\pi   → JSON string "\\\\pi"
+   INCORRECT:
+   "Solve x^2 + 2x + 1"
 
-3. Example of a correctly escaped fraction in JSON:
+2. EVERY math expression (question, options, explanation) MUST use LaTeX.
+
+3. NEVER use Unicode math symbols:
+   × ÷ √ π ∑ → NOT allowed
+
+4. ALL LaTeX must be JSON-escaped:
+   \frac → \\frac
+   \sqrt → \\sqrt
+   \int → \\int
+   \sum → \\sum
+   \pi → \\pi
+   \cdot → \\cdot
+
+5. Example:
    "questionText": "Simplify $\\\\frac{3}{4} + \\\\frac{1}{2}$"
 
-4. Never use plain Unicode math symbols (×, ÷, √, π, ∑). Use LaTeX commands instead.
+━━━━━━━━━━━━━━━━━━━━━━
+MATHEMATICAL CONSISTENCY RULES (CRITICAL)
+━━━━━━━━━━━━━━━━━━━━━━
+- Solve the problem FIRST before generating any JSON.
+- Show internal computation mentally before output.
+- The correctAnswer MUST match the computed result exactly.
+- The correctAnswer MUST appear inside options (MCQ only).
+- ALL incorrect options must be:
+  • plausible
+  • mathematically related
+  • but strictly incorrect
+
+- NEVER guess.
+- If multiple methods exist, choose the simplest correct one.
+- Always fully simplify expressions before final answer.
+
+━━━━━━━━━━━━━━━━━━━━━━
+FINAL VALIDATION CHECK (MANDATORY)
+━━━━━━━━━━━━━━━━━━━━━━
+Before outputting JSON, verify:
+
+1. Correct answer is mathematically verified
+2. correctAnswer exists in options (if multiple-choice)
+3. No duplicated correct options
+4. All math uses $...$
+5. All LaTeX is properly escaped
+6. No missing or empty explanation
+7. No contradictions between steps and final answer
+
+If ANY check fails → recompute before output.
 
 ━━━━━━━━━━━━━━━━━━━━━━
 QUESTION TYPE RULES
 ━━━━━━━━━━━━━━━━━━━━━━
-${type === "multiple-choice" ? `
+
 TYPE: multiple-choice
-- Provide exactly 4 options: keys "A", "B", "C", "D"
-- Each option value must be a string (may include LaTeX)
-- correctAnswer must be exactly one of: "A", "B", "C", or "D"
-- Only ONE option should be correct` : ""}
+- Provide exactly 4 options: "A", "B", "C", "D"
+- Only ONE correct answer
+- correctAnswer must be exactly one of A/B/C/D
 
-${type === "true-false" ? `
 TYPE: true-false
-CRITICAL RULES — READ CAREFULLY:
-- The questionText must be a STATEMENT (not a question), which is either true or false.
-- NEVER mention "True", "False", "A", or "B" anywhere inside questionText. The question text is ONLY the mathematical statement itself.
-- BAD example:  "The derivative of $x^2$ is $2x$. A True, B False"  ← NEVER do this
-- GOOD example: "The derivative of $x^2$ is $2x$"                  ← statement only, no options
-- options must be exactly: {"A": "True", "B": "False"}
-- correctAnswer must be exactly "A" or "B"` : ""}
+- questionText must be a statement only (NO True/False inside it)
+- options must be:
+  { "A": "True", "B": "False" }
+- correctAnswer must be "A" or "B"
 
-${type === "identification" ? `
 TYPE: identification
-- options must be an empty object: {}
-- correctAnswer is the exact value, formula, or term (use LaTeX if math)
-- Keep the answer concise (a word, symbol, or short expression)` : ""}
+- options = {}
+- correctAnswer = exact final result (use LaTeX if needed)
 
-${type === "solution-based" ? `
 TYPE: solution-based
-- options must be an empty object: {}
-- correctAnswer is the final numeric or algebraic result (use LaTeX)
-- explanation must show each step of the derivation clearly, using LaTeX for all math` : ""}
+- options = {}
+- correctAnswer = final simplified result (LaTeX allowed)
+- explanation MUST show full step-by-step derivation
 
 ━━━━━━━━━━━━━━━━━━━━━━
-REQUIRED JSON STRUCTURE
+REQUIRED JSON OUTPUT FORMAT
 ━━━━━━━━━━━━━━━━━━━━━━
-Output this exact structure and nothing else.
-The "explanation" field is REQUIRED and must NEVER be empty — always provide a full explanation of why the answer is correct.
+Return ONLY this JSON structure:
 
 {
   "questions": [
     {
-      "questionText": "The full question or statement goes here",
-      "answerFormat": "${type}",
-      "options": { "A": "True", "B": "False" },
+      "questionText": "string",
+      "answerFormat": "multiple-choice | true-false | identification | solution-based",
+      "options": {
+        "A": "string",
+        "B": "string",
+        "C": "string",
+        "D": "string"
+      },
       "correctAnswer": "A",
-      "explanation": "A full explanation of why the answer is correct goes here. This field must not be empty."
+      "explanation": "string (must not be empty)"
     }
   ]
 }
 
-Reminder: output ONLY the JSON object. No text before or after it.
-`;
+━━━━━━━━━━━━━━━━━━━━━━
+STRICT OUTPUT RULE
+━━━━━━━━━━━━━━━━━━━━━━
+- Output ONLY valid JSON
+- No markdown
+- No extra text
+- No commentary`;
 
     try {
       const response = await fetch(GROQ_URL, {
