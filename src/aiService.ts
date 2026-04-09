@@ -39,6 +39,8 @@ All mathematical expressions MUST use LaTeX. Follow these rules exactly:
 
 4. Never use plain Unicode math symbols (×, ÷, √, π, ∑). Use LaTeX commands instead.
 
+5. DO NOT BOX THE OPTIONS NOR THE QUESTION.
+
 ━━━━━━━━━━━━━━━━━━━━━━
 QUESTION TYPE RULES
 ━━━━━━━━━━━━━━━━━━━━━━
