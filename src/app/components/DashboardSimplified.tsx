@@ -1,7 +1,7 @@
 // ============================================================
 // ANTHROPIC API KEY — pulled from env
 // ============================================================
-const ANTHROPIC_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
+const ANTHROPIC_API_KEY = "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";
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useFilters } from '../lib/FilterContext';
