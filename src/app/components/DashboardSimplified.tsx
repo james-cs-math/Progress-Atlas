@@ -1,12 +1,9 @@
 // ============================================================
-// ANTHROPIC API KEY — replace with your actual key
-// Move this to an environment variable in production
-// e.g. process.env.NEXT_PUBLIC_ANTHROPIC_API_KEY
+// ANTHROPIC API KEY — pulled from env
 // ============================================================
 const ANTHROPIC_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
-// ============================================================
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useFilters } from '../lib/FilterContext';
 import { useTier } from '../lib/TierContext';
 import { Card, CardContent, CardTitle } from './ui/card';
@@ -17,7 +14,7 @@ import {
 } from 'recharts';
 import {
   BarChart3, Lock, ChevronDown, ChevronUp, History,
-  GraduationCap, Layers, CheckCircle2, Send, Sparkles
+  GraduationCap, Layers, CheckCircle2, Send, Sparkles, X
 } from 'lucide-react';
 import { InlineMath } from 'react-katex';
 
@@ -54,14 +51,66 @@ interface TestSession {
   course?: string;
   setType?: string;
   results?: {
-    accuracy?: number;
+    accuracy?: number | null;
     responses?: TestResponse[];
+    score?: number;
+    total?: number;
+    completed?: boolean;
   };
 }
 
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+}
+
+// ─── Per-question chat state ──────────────────────────────────────────────────
+interface QuestionChatState {
+  thread: ChatMessage[];
+  input: string;
+  isThinking: boolean;
+  isOpen: boolean;
+}
+
+// ─── Helper: determine if a session is truly complete ────────────────────────
+// A session is complete if it has a numeric accuracy (including 0),
+// OR if it has responses AND (score/total or completed flag)
+function isSessionComplete(session: TestSession): boolean {
+  const r = session.results;
+  if (!r) return false;
+
+  // Explicit accuracy value (including 0%)
+  if (typeof r.accuracy === 'number') return true;
+
+  // Fallback: has responses array with at least one item
+  if (Array.isArray(r.responses) && r.responses.length > 0) return true;
+
+  // Fallback: score + total present
+  if (typeof r.score === 'number' && typeof r.total === 'number') return true;
+
+  // Fallback: explicit completed flag
+  if (r.completed === true) return true;
+
+  return false;
+}
+
+// Derive accuracy from whatever data is available
+function deriveAccuracy(session: TestSession): number | null {
+  const r = session.results;
+  if (!r) return null;
+
+  if (typeof r.accuracy === 'number') return r.accuracy;
+
+  if (typeof r.score === 'number' && typeof r.total === 'number' && r.total > 0) {
+    return Math.round((r.score / r.total) * 100);
+  }
+
+  if (Array.isArray(r.responses) && r.responses.length > 0) {
+    const correct = r.responses.filter(resp => resp.isCorrect === true).length;
+    return Math.round((correct / r.responses.length) * 100);
+  }
+
+  return null;
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -73,32 +122,25 @@ export function DashboardSimplified() {
   const [expandedSession, setExpandedSession] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Chat state — keyed by a unique string per question card
-  const [activeChatId, setActiveChatId] = useState<string | null>(null);
-  const [chatThreads, setChatThreads] = useState<Record<string, ChatMessage[]>>({});
-  const [chatInput, setChatInput] = useState('');
-  const [isAiThinking, setIsAiThinking] = useState(false);
-  // Store the context (question data) for the currently active chat
-  const activeChatContext = useRef<TestResponse | null>(null);
-  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  // Per-question chat state: keyed by chatId (`${sessionKey}-${questionIndex}`)
+  const [questionChats, setQuestionChats] = useState<Record<string, QuestionChatState>>({});
+
+  // Store context (question data) per chatId
+  const chatContexts = useRef<Record<string, TestResponse>>({});
+
+  // Refs for scroll-to-bottom per chat
+  const chatEndRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const hasAccess = (required: string) =>
     (TIER_RANK[currentTier] ?? 0) >= (TIER_RANK[required] ?? 0);
 
   // ─── Data loading ──────────────────────────────────────────────────────────
-  useEffect(() => {
-    loadDashboardData();
-    const onUpdate = () => loadDashboardData();
-    window.addEventListener('atlas_usage_updated', onUpdate);
-    return () => window.removeEventListener('atlas_usage_updated', onUpdate);
-  }, []);
-
-  const loadDashboardData = () => {
+  const loadDashboardData = useCallback(() => {
     try {
       const raw = localStorage.getItem('atlas_test_history');
       const parsed: TestSession[] = raw ? JSON.parse(raw) : [];
       setDiagnosticTests(
-        parsed.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        [...parsed].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
       );
     } catch (e) {
       console.error('Error loading dashboard data:', e);
@@ -106,51 +148,65 @@ export function DashboardSimplified() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  // ─── Derived course value (handles scalar or array) ───────────────────────
+  useEffect(() => {
+    loadDashboardData();
+
+    // Listen for any relevant events that signal new session data
+    const events = ['atlas_usage_updated', 'atlas_session_complete', 'storage'];
+    const handler = () => loadDashboardData();
+    events.forEach(ev => window.addEventListener(ev, handler));
+
+    // Also poll localStorage every 5s for changes from other tabs/components
+    const interval = setInterval(loadDashboardData, 5000);
+
+    return () => {
+      events.forEach(ev => window.removeEventListener(ev, handler));
+      clearInterval(interval);
+    };
+  }, [loadDashboardData]);
+
+  // ─── Derived course value ─────────────────────────────────────────────────
   const activeCourses = useMemo(
     () => [selectedCourse].flat().filter(Boolean) as string[],
     [selectedCourse]
   );
-
   const singleCourse = activeCourses[0] ?? null;
 
-  // ─── Filtered + completed data ────────────────────────────────────────────
+  // ─── Filtered data ────────────────────────────────────────────────────────
   const filteredData = useMemo(() => diagnosticTests.filter(test => {
     const matchesCourse = activeCourses.length === 0 || activeCourses.includes(test.course ?? '');
     let matchesMode = true;
-    if (selectedMode === 'practice')   matchesMode = test.setType === 'practice';
+    if (selectedMode === 'practice') matchesMode = test.setType === 'practice';
     else if (selectedMode === 'diagnostic') matchesMode = test.setType !== 'practice';
     return matchesCourse && matchesMode;
   }), [diagnosticTests, activeCourses, selectedMode]);
 
+  // Use the fixed isSessionComplete — no more false "incomplete" labels
   const completedData = useMemo(
-    () => filteredData.filter(t => t.results?.accuracy !== undefined),
+    () => filteredData.filter(isSessionComplete),
     [filteredData]
   );
 
-  // ─── Stats ─────────────────────────────────────────────────────────────────
+  // ─── Stats (uses derived accuracy so even sessions without explicit accuracy field count) ──
   const stats = useMemo(() => {
     if (completedData.length === 0) return { accuracy: 0, velocity: 0, maturity: 0, trendData: [] };
 
-    const accuracy = Math.round(
-      completedData.reduce((s, t) => s + (t.results!.accuracy!), 0) / completedData.length
-    );
+    const accValues = completedData.map(t => deriveAccuracy(t) ?? 0);
+    const accuracy = Math.round(accValues.reduce((s, a) => s + a, 0) / accValues.length);
 
-    // Velocity only meaningful with 4+ sessions
     let velocity = 0;
     if (completedData.length >= 4) {
-      const last3  = completedData.slice(0, 3).reduce((s, t) => s + t.results!.accuracy!, 0) / 3;
-      const first3 = completedData.slice(-3).reduce((s, t) => s + t.results!.accuracy!, 0) / 3;
+      const last3  = accValues.slice(0, 3).reduce((s, a) => s + a, 0) / 3;
+      const first3 = accValues.slice(-3).reduce((s, a) => s + a, 0) / 3;
       velocity = Math.round(last3 - first3);
     }
 
     const trendData = [...completedData].reverse().map((t, index) => ({
-      // Use a stable key: prefer stored id, fall back to index+timestamp combo
-      id: t.id ? t.id : `idx-${index}`,
+      id: t.id ?? `idx-${index}`,
       date: new Date(t.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
-      accuracy: t.results!.accuracy!,
+      accuracy: deriveAccuracy(t) ?? 0,
     }));
 
     return {
@@ -161,7 +217,7 @@ export function DashboardSimplified() {
     };
   }, [completedData]);
 
-  // ─── Mastery data — safe rule handling ────────────────────────────────────
+  // ─── Mastery data ─────────────────────────────────────────────────────────
   const masteryData = useMemo(() => {
     const ruleMap: Record<string, { total: number; correct: number; time: number }> = {};
 
@@ -169,13 +225,7 @@ export function DashboardSimplified() {
       .filter(t => Array.isArray(t.results?.responses))
       .forEach(test => {
         test.results!.responses!.forEach(r => {
-          // Normalise rule to always be string[]
-          const rules: string[] = Array.isArray(r.rule)
-            ? r.rule
-            : r.rule
-            ? [r.rule]
-            : [];
-
+          const rules: string[] = Array.isArray(r.rule) ? r.rule : r.rule ? [r.rule] : [];
           rules.forEach(name => {
             if (!ruleMap[name]) ruleMap[name] = { total: 0, correct: 0, time: 0 };
             ruleMap[name].total++;
@@ -200,7 +250,7 @@ export function DashboardSimplified() {
 
   // ─── Render helpers ────────────────────────────────────────────────────────
   const renderMixedText = (text?: string) => {
-    if (!text) return '';
+    if (!text) return null;
     const parts = text.split(/(\$.*?\$)/g);
     return (
       <span>
@@ -213,10 +263,10 @@ export function DashboardSimplified() {
     );
   };
 
-  // ─── Session key helper ────────────────────────────────────────────────────
+  // ─── Session key ──────────────────────────────────────────────────────────
   const sessionKey = (session: TestSession) => session.id ?? session.timestamp;
 
-  // ─── AI chat via real Anthropic API ───────────────────────────────────────
+  // ─── Anthropic API call ───────────────────────────────────────────────────
   const callAnthropicAPI = async (messages: ChatMessage[], systemPrompt: string): Promise<string> => {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -224,7 +274,6 @@ export function DashboardSimplified() {
         'Content-Type': 'application/json',
         'x-api-key': ANTHROPIC_API_KEY,
         'anthropic-version': '2023-06-01',
-        // Required for browser-side requests:
         'anthropic-dangerous-direct-browser-access': 'true',
       },
       body: JSON.stringify({
@@ -245,16 +294,15 @@ export function DashboardSimplified() {
     return textBlock?.text ?? 'No response from AI.';
   };
 
-  // Build system prompt from the question context
   const buildSystemPrompt = (resp: TestResponse): string => {
     const rules = Array.isArray(resp.rule) ? resp.rule.join(', ') : resp.rule ?? 'the topic';
     return [
       'You are Atlas, a concise math tutor AI embedded in a student dashboard.',
       `The student just answered a question about: ${rules}.`,
-      resp.questionText    ? `Question: ${resp.questionText}` : '',
+      resp.questionText     ? `Question: ${resp.questionText}` : '',
       resp.correctAnswerText ? `Correct answer: ${resp.correctAnswerText}` : '',
-      resp.userAnswerText ?? resp.userAnswer
-        ? `Student's answer: ${resp.userAnswerText ?? resp.userAnswer}` : '',
+      (resp.userAnswerText ?? resp.userAnswer)
+        ? `Student answer: ${resp.userAnswerText ?? resp.userAnswer}` : '',
       resp.isCorrect !== undefined
         ? `The student was ${resp.isCorrect ? 'correct' : 'incorrect'}.` : '',
       resp.explanation ? `Explanation: ${resp.explanation}` : '',
@@ -262,19 +310,38 @@ export function DashboardSimplified() {
     ].filter(Boolean).join('\n');
   };
 
-  // Open AI tutor for a specific question
-  const handleExplain = async (resp: TestResponse, chatId: string) => {
+  // ─── Per-question chat helpers ────────────────────────────────────────────
+  const getChatState = (chatId: string): QuestionChatState =>
+    questionChats[chatId] ?? { thread: [], input: '', isThinking: false, isOpen: false };
+
+  const updateChat = (chatId: string, patch: Partial<QuestionChatState>) =>
+    setQuestionChats(prev => ({
+      ...prev,
+      [chatId]: { ...getChatState(chatId), ...patch },
+    }));
+
+  const scrollToBottom = (chatId: string) => {
+    setTimeout(() => chatEndRefs.current[chatId]?.scrollIntoView({ behavior: 'smooth' }), 50);
+  };
+
+  // Open and initialise AI tutor for a specific question
+  const handleOpenTutor = async (resp: TestResponse, chatId: string) => {
     if (!hasAccess('socrates')) return;
 
-    setActiveChatId(chatId);
-    activeChatContext.current = resp;
-    setIsAiThinking(true);
-
-    // If this chat was already started, don't re-initialise
-    if (chatThreads[chatId]) {
-      setIsAiThinking(false);
+    // Toggle off if already open
+    const current = getChatState(chatId);
+    if (current.isOpen) {
+      updateChat(chatId, { isOpen: false });
       return;
     }
+
+    updateChat(chatId, { isOpen: true });
+
+    // Already initialised — just open
+    if (current.thread.length > 0) return;
+
+    chatContexts.current[chatId] = resp;
+    updateChat(chatId, { isThinking: true });
 
     try {
       const systemPrompt = buildSystemPrompt(resp);
@@ -282,67 +349,54 @@ export function DashboardSimplified() {
         role: 'user',
         content: `Please explain this problem and why ${resp.isCorrect ? 'my answer was correct' : 'I got it wrong'}.`,
       };
-
       const reply = await callAnthropicAPI([initialUserMsg], systemPrompt);
-
-      setChatThreads(prev => ({
-        ...prev,
-        [chatId]: [initialUserMsg, { role: 'assistant', content: reply }],
-      }));
+      updateChat(chatId, {
+        thread: [initialUserMsg, { role: 'assistant', content: reply }],
+        isThinking: false,
+      });
+      scrollToBottom(chatId);
     } catch (e: any) {
-      setChatThreads(prev => ({
-        ...prev,
-        [chatId]: [{ role: 'assistant', content: `Error: ${e.message}` }],
-      }));
-    } finally {
-      setIsAiThinking(false);
+      updateChat(chatId, {
+        thread: [{ role: 'assistant', content: `Error: ${e.message}` }],
+        isThinking: false,
+      });
     }
   };
 
-  // Send a follow-up message in the active chat
-  const sendChatMessage = async () => {
-    if (!chatInput.trim() || isAiThinking || !activeChatId) return;
+  // Send follow-up in a specific question's chat
+  const sendMessage = async (chatId: string) => {
+    const state = getChatState(chatId);
+    if (!state.input.trim() || state.isThinking) return;
 
-    const msg = chatInput.trim();
-    setChatInput('');
-
-    const currentThread = chatThreads[activeChatId] ?? [];
+    const msg = state.input.trim();
     const userMsg: ChatMessage = { role: 'user', content: msg };
-    const updatedThread = [...currentThread, userMsg];
+    const updatedThread = [...state.thread, userMsg];
 
-    setChatThreads(prev => ({ ...prev, [activeChatId]: updatedThread }));
-    setIsAiThinking(true);
+    updateChat(chatId, { thread: updatedThread, input: '', isThinking: true });
 
     try {
-      const systemPrompt = activeChatContext.current
-        ? buildSystemPrompt(activeChatContext.current)
+      const resp = chatContexts.current[chatId];
+      const systemPrompt = resp
+        ? buildSystemPrompt(resp)
         : 'You are Atlas, a concise and encouraging math tutor AI.';
 
       const reply = await callAnthropicAPI(updatedThread, systemPrompt);
-      setChatThreads(prev => ({
-        ...prev,
-        [activeChatId]: [...updatedThread, { role: 'assistant', content: reply }],
-      }));
+      updateChat(chatId, {
+        thread: [...updatedThread, { role: 'assistant', content: reply }],
+        isThinking: false,
+      });
+      scrollToBottom(chatId);
     } catch (e: any) {
-      setChatThreads(prev => ({
-        ...prev,
-        [activeChatId]: [...updatedThread, { role: 'assistant', content: `Error: ${e.message}` }],
-      }));
-    } finally {
-      setIsAiThinking(false);
-      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+      updateChat(chatId, {
+        thread: [...updatedThread, { role: 'assistant', content: `Error: ${e.message}` }],
+        isThinking: false,
+      });
     }
   };
 
-  // ─── Toggle session expansion, clearing stale chat on collapse ────────────
+  // ─── Toggle session expansion ─────────────────────────────────────────────
   const toggleSession = (key: string) => {
-    if (expandedSession === key) {
-      setExpandedSession(null);
-      setActiveChatId(null);
-      activeChatContext.current = null;
-    } else {
-      setExpandedSession(key);
-    }
+    setExpandedSession(prev => (prev === key ? null : key));
   };
 
   // ─── Render ────────────────────────────────────────────────────────────────
@@ -375,9 +429,7 @@ export function DashboardSimplified() {
         <MetricCard
           label="Velocity"
           value={hasAccess('plato')
-            ? (completedData.length < 4
-              ? 'Need 4+ sessions'
-              : `${stats.velocity > 0 ? '+' : ''}${stats.velocity}%`)
+            ? (completedData.length < 4 ? 'Need 4+ sessions' : `${stats.velocity > 0 ? '+' : ''}${stats.velocity}%`)
             : <Lock size={14} />}
           color="text-emerald-600"
         />
@@ -406,15 +458,17 @@ export function DashboardSimplified() {
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               <Card className="p-4 border-none shadow-lg">
-                <CardTitle className="text-[10px] font-black uppercase text-slate-500 mb-4 px-2">Performance Flow</CardTitle>
+                <CardTitle className="text-[10px] font-black uppercase text-slate-500 mb-4 px-2">
+                  Performance Flow ({completedData.length} sessions)
+                </CardTitle>
                 <div className="h-[250px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={stats.trendData} margin={{ left: -20, bottom: 20 }}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                       <XAxis dataKey="date" tick={{ fontSize: 9, fontWeight: 700 }} axisLine={false} />
                       <YAxis domain={[0, 100]} tick={{ fontSize: 9, fontWeight: 700 }} axisLine={false} unit="%" />
-                      <Tooltip />
-                      <Area type="monotone" dataKey="accuracy" stroke="#6366f1" strokeWidth={3} fillOpacity={0.1} fill="#6366f1" />
+                      <Tooltip formatter={(val: number) => [`${val}%`, 'Accuracy']} />
+                      <Area type="monotone" dataKey="accuracy" stroke="#6366f1" strokeWidth={3} fillOpacity={0.1} fill="#6366f1" dot={{ r: 3, fill: '#6366f1' }} />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
@@ -530,6 +584,8 @@ export function DashboardSimplified() {
           ) : filteredData.map(session => {
             const key = sessionKey(session);
             const isExpanded = expandedSession === key;
+            const complete = isSessionComplete(session);
+            const accuracy = deriveAccuracy(session);
 
             return (
               <Card key={key} className="overflow-hidden border-slate-100 shadow-none">
@@ -543,13 +599,15 @@ export function DashboardSimplified() {
                       <h4 className="font-bold text-sm">{session.topic}</h4>
                       <p className="text-[9px] text-slate-400 font-black uppercase">
                         {new Date(session.timestamp).toLocaleDateString()} · {session.setType}
-                        {session.results?.accuracy !== undefined ? ` · ${session.results.accuracy}%` : ' · Incomplete'}
+                        {complete
+                          ? accuracy !== null ? ` · ${accuracy}%` : ' · Completed'
+                          : ' · Incomplete'}
                       </p>
                     </div>
                   </div>
                   <div className="flex items-center gap-4">
                     <p className="text-xl font-black italic">
-                      {session.results?.accuracy !== undefined ? `${session.results.accuracy}%` : '—'}
+                      {accuracy !== null ? `${accuracy}%` : '—'}
                     </p>
                     {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
                   </div>
@@ -563,10 +621,7 @@ export function DashboardSimplified() {
                       <ProUpgradeOverlay tier="Plato" />
                     ) : session.results.responses.map((resp, idx) => {
                       const chatId = `${key}-${idx}`;
-                      const isActiveChat = activeChatId === chatId;
-                      const thread = chatThreads[chatId] ?? [];
-
-                      // Resolve answer fields — prefer text variant, fall back to raw
+                      const chatState = getChatState(chatId);
                       const userAnswerDisplay   = resp.userAnswerText   ?? resp.userAnswer   ?? '—';
                       const correctAnswerDisplay = resp.correctAnswerText ?? resp.correctAnswer ?? '—';
 
@@ -580,10 +635,17 @@ export function DashboardSimplified() {
                             {hasAccess('socrates') ? (
                               <Button
                                 variant="ghost"
-                                className="h-7 text-[10px] font-black uppercase text-indigo-600 hover:bg-indigo-50"
-                                onClick={() => handleExplain(resp, chatId)}
+                                className={`h-7 text-[10px] font-black uppercase transition-colors ${
+                                  chatState.isOpen
+                                    ? 'text-slate-500 hover:bg-slate-50'
+                                    : 'text-indigo-600 hover:bg-indigo-50'
+                                }`}
+                                onClick={() => handleOpenTutor(resp, chatId)}
                               >
-                                <Sparkles size={12} className="mr-1.5" /> AI Tutor
+                                {chatState.isOpen
+                                  ? <><X size={12} className="mr-1.5" /> Close Tutor</>
+                                  : <><Sparkles size={12} className="mr-1.5" /> AI Tutor</>
+                                }
                               </Button>
                             ) : (
                               <div className="text-[8px] font-black text-slate-400 uppercase flex items-center gap-1">
@@ -625,37 +687,52 @@ export function DashboardSimplified() {
                             </div>
                           )}
 
-                          {/* AI Tutor Chat */}
-                          {hasAccess('socrates') && isActiveChat && (
-                            <div className="mt-4 border-t pt-4 space-y-4">
-                              <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2">
-                                {thread.map((msg, mIdx) => (
+                          {/* ── Per-question AI Tutor Chat ── */}
+                          {hasAccess('socrates') && chatState.isOpen && (
+                            <div className="mt-2 border border-indigo-100 rounded-2xl bg-indigo-50/30 p-4 space-y-3">
+                              <p className="text-[8px] font-black uppercase text-indigo-400 tracking-widest mb-2">Atlas AI Tutor</p>
+
+                              {/* Message thread */}
+                              <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1">
+                                {chatState.thread.length === 0 && chatState.isThinking && (
+                                  <div className="text-[10px] font-black text-slate-400 uppercase animate-pulse">Thinking...</div>
+                                )}
+                                {chatState.thread.map((msg, mIdx) => (
                                   <div key={mIdx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                    <div className={`max-w-[85%] p-3 rounded-xl text-xs ${msg.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 font-medium'}`}>
+                                    <div className={`max-w-[85%] p-3 rounded-xl text-xs leading-relaxed ${
+                                      msg.role === 'user'
+                                        ? 'bg-indigo-600 text-white'
+                                        : 'bg-white border border-slate-200 text-slate-700 font-medium'
+                                    }`}>
                                       {renderMixedText(msg.content)}
                                     </div>
                                   </div>
                                 ))}
-                                {isAiThinking && (
-                                  <div className="text-[10px] font-black text-slate-400 uppercase animate-pulse">Thinking...</div>
+                                {chatState.thread.length > 0 && chatState.isThinking && (
+                                  <div className="flex justify-start">
+                                    <div className="bg-white border border-slate-200 px-4 py-2 rounded-xl text-[10px] font-black text-slate-400 uppercase animate-pulse">
+                                      Thinking...
+                                    </div>
+                                  </div>
                                 )}
-                                <div ref={chatEndRef} />
+                                <div ref={el => { chatEndRefs.current[chatId] = el; }} />
                               </div>
 
-                              <div className="flex gap-2">
+                              {/* Input */}
+                              <div className="flex gap-2 pt-1">
                                 <input
-                                  className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-indigo-300"
-                                  placeholder="Ask a follow-up..."
-                                  value={chatInput}
-                                  onChange={e => setChatInput(e.target.value)}
-                                  onKeyDown={e => e.key === 'Enter' && sendChatMessage()}
-                                  disabled={isAiThinking}
+                                  className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-100"
+                                  placeholder="Ask a follow-up question..."
+                                  value={chatState.input}
+                                  onChange={e => updateChat(chatId, { input: e.target.value })}
+                                  onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendMessage(chatId)}
+                                  disabled={chatState.isThinking}
                                 />
                                 <Button
                                   size="sm"
-                                  className="bg-indigo-600 hover:bg-indigo-700"
-                                  onClick={sendChatMessage}
-                                  disabled={isAiThinking}
+                                  className="bg-indigo-600 hover:bg-indigo-700 shrink-0"
+                                  onClick={() => sendMessage(chatId)}
+                                  disabled={chatState.isThinking || !chatState.input.trim()}
                                 >
                                   <Send size={14} />
                                 </Button>
