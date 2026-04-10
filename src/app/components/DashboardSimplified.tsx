@@ -153,17 +153,21 @@ export function DashboardSimplified() {
   useEffect(() => {
     loadDashboardData();
 
-    // Listen for any relevant events that signal new session data
-    const events = ['atlas_usage_updated', 'atlas_session_complete', 'storage'];
     const handler = () => loadDashboardData();
-    events.forEach(ev => window.addEventListener(ev, handler));
 
-    // Also poll localStorage every 5s for changes from other tabs/components
-    const interval = setInterval(loadDashboardData, 5000);
+    // atlas_usage_updated — fired by both PracticeQuestion and DiagnosticTest after saving
+    window.addEventListener('atlas_usage_updated', handler);
+
+    // storage — picks up writes from other tabs
+    window.addEventListener('storage', handler);
+
+    // visibilitychange — re-reads when user switches back to this tab
+    document.addEventListener('visibilitychange', handler);
 
     return () => {
-      events.forEach(ev => window.removeEventListener(ev, handler));
-      clearInterval(interval);
+      window.removeEventListener('atlas_usage_updated', handler);
+      window.removeEventListener('storage', handler);
+      document.removeEventListener('visibilitychange', handler);
     };
   }, [loadDashboardData]);
 
