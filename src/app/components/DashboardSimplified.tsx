@@ -1,7 +1,5 @@
-// ============================================================
-// ANTHROPIC API KEY — pulled from env
-// ============================================================
-const ANTHROPIC_API_KEY = "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";
+const GROQ_API_KEY = "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";
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useFilters } from '../lib/FilterContext';
@@ -270,21 +268,22 @@ export function DashboardSimplified() {
   // ─── Session key ──────────────────────────────────────────────────────────
   const sessionKey = (session: TestSession) => session.id ?? session.timestamp;
 
-  // ─── Anthropic API call ───────────────────────────────────────────────────
-  const callAnthropicAPI = async (messages: ChatMessage[], systemPrompt: string): Promise<string> => {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+  // ─── Groq API call ───────────────────────────────────────────────────
+  const callGroqAPI = async (messages: ChatMessage[], systemPrompt: string): Promise<string> => {
+    const response = await fetch(GROQ_URL, {
       method: 'POST',
       headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
         'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
       },
       body: JSON.stringify({
-        model: 'claude-opus-4-5',
+        model: 'llama-3.1-8b-instant',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...messages.map(m => ({ role: m.role, content: m.content })),
+        ],
+        temperature: 0.4,
         max_tokens: 1024,
-        system: systemPrompt,
-        messages: messages.map(m => ({ role: m.role, content: m.content })),
       }),
     });
 
@@ -294,8 +293,7 @@ export function DashboardSimplified() {
     }
 
     const data = await response.json();
-    const textBlock = data.content?.find((b: any) => b.type === 'text');
-    return textBlock?.text ?? 'No response from AI.';
+    return data.choices?.[0]?.message?.content ?? 'No response from AI.';
   };
 
   const buildSystemPrompt = (resp: TestResponse): string => {
@@ -353,7 +351,7 @@ export function DashboardSimplified() {
         role: 'user',
         content: `Please explain this problem and why ${resp.isCorrect ? 'my answer was correct' : 'I got it wrong'}.`,
       };
-      const reply = await callAnthropicAPI([initialUserMsg], systemPrompt);
+      const reply = await callGroqAPI([initialUserMsg], systemPrompt);
       updateChat(chatId, {
         thread: [initialUserMsg, { role: 'assistant', content: reply }],
         isThinking: false,
@@ -384,7 +382,7 @@ export function DashboardSimplified() {
         ? buildSystemPrompt(resp)
         : 'You are Atlas, a concise and encouraging math tutor AI.';
 
-      const reply = await callAnthropicAPI(updatedThread, systemPrompt);
+      const reply = await callGroqAPI(updatedThread, systemPrompt);
       updateChat(chatId, {
         thread: [...updatedThread, { role: 'assistant', content: reply }],
         isThinking: false,
