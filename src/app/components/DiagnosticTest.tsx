@@ -61,17 +61,63 @@ Rules:
   }
 }
 
+// ─── Save completed diagnostic session ───────────────────────────────────────
+function saveDiagnosticSession(
+  topic: string,
+  course: string,
+  responses: any[],
+  totalQuestions: number
+) {
+  try {
+    const history: any[] = JSON.parse(localStorage.getItem('atlas_test_history') || '[]');
+    const correctCount = responses.filter(r => r.isCorrect).length;
+    const accuracy = Math.round((correctCount / totalQuestions) * 100);
+
+    // Replace any open (incomplete) session for this topic, otherwise push new
+    const openIdx = history.findLastIndex(
+      (s: any) => s.setType === 'diagnostic' && s.topic === topic && !s.results?.completed
+    );
+
+    const sessionEntry = {
+      id: `diag_${Date.now()}`,
+      timestamp: openIdx >= 0 ? history[openIdx].timestamp : new Date().toISOString(),
+      setType: 'diagnostic',
+      topic,
+      course,
+      results: {
+        completed: true,
+        totalQuestions,
+        correctCount,
+        accuracy,
+        responses,
+      },
+    };
+
+    if (openIdx >= 0) {
+      history[openIdx] = sessionEntry;
+    } else {
+      history.push(sessionEntry);
+    }
+
+    localStorage.setItem('atlas_test_history', JSON.stringify(history));
+
+    // Dispatch AFTER writing so any listener re-reads the updated data
+    window.dispatchEvent(new Event('atlas_usage_updated'));
+  } catch (e) {
+    console.error('Failed to save diagnostic session:', e);
+  }
+}
+
 // ─── Text Renderer ────────────────────────────────────────────────────────────
-// Coerce option values that are pure math fragments into a single inline math block
 const sanitizeOption = (text: string): string => {
   const trimmed = text.trim();
-  // If it contains newlines and looks like broken LaTeX, collapse into one $...$ block
   if (trimmed.includes('\n') && !trimmed.startsWith('$')) {
     const joined = trimmed.split('\n').map(l => l.trim()).filter(Boolean).join(' ');
     return `$${joined}$`;
   }
   return trimmed;
 };
+
 const renderText = (text?: string): React.ReactNode => {
   if (!text) return null;
   const parts = text.split(/(\$\$[\s\S]+?\$\$|\$[^$]+?\$)/g);
@@ -151,6 +197,7 @@ export function DiagnosticTest({ onComplete, topic }: { onComplete: () => void; 
       userAnswer: selectedAnswer,
       correctAnswer: q.correctAnswer,
       explanation: q.explanation,
+      rule: q.rule ?? q.topic ?? topic,
       isCorrect,
       aiFeedback: feedback,
     };
@@ -162,41 +209,13 @@ export function DiagnosticTest({ onComplete, topic }: { onComplete: () => void; 
       setCurrentIndex(prev => prev + 1);
       setSelectedAnswer('');
     } else {
-      // ── Save full session and exit ──
-      const correctCount = updatedResponses.filter(r => r.isCorrect).length;
-      const accuracy = Math.round((correctCount / questions.length) * 100);
+      // ── Save first, THEN call onComplete so the dashboard is still mounted
+      //    when the atlas_usage_updated event fires ──
+      const course = Array.isArray(selectedCourse) ? selectedCourse[0] : (selectedCourse ?? '');
+      saveDiagnosticSession(topic, course, updatedResponses, questions.length);
 
-      try {
-        const history = JSON.parse(localStorage.getItem('atlas_test_history') || '[]');
-        const idx = history.findLastIndex(
-          (s: any) => s.setType === 'diagnostic' && s.topic === topic && !s.results?.completed
-        );
-        const sessionEntry = {
-          id: `diag_${Date.now()}`,
-          timestamp: idx >= 0 ? history[idx].timestamp : new Date().toISOString(),
-          setType: 'diagnostic',
-          topic,
-          course: Array.isArray(selectedCourse) ? selectedCourse[0] : selectedCourse,
-          results: {
-            completed: true,
-            totalQuestions: questions.length,
-            correctCount,
-            accuracy,
-            responses: updatedResponses,
-          },
-        };
-        if (idx >= 0) {
-          history[idx] = sessionEntry;
-        } else {
-          history.push(sessionEntry);
-        }
-        localStorage.setItem('atlas_test_history', JSON.stringify(history));
-        window.dispatchEvent(new Event('atlas_usage_updated'));
-      } catch (e) {
-        console.error('Failed to save diagnostic session:', e);
-      }
-
-      onComplete();
+      // Small delay so the event listener has time to fire before unmount
+      setTimeout(() => onComplete(), 50);
     }
   };
 
