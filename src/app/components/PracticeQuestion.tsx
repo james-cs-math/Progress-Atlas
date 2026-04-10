@@ -65,11 +65,74 @@ Rules:
   }
 }
 
+// ─── Save a single practice response to localStorage ─────────────────────────
+function savePracticeResponse(
+  topic: string,
+  course: string,
+  response: {
+    questionText: string;
+    answerFormat: string;
+    userAnswer: string;
+    correctAnswer: string;
+    explanation: string;
+    isCorrect: boolean;
+    aiFeedback: string;
+    rule?: string;
+  }
+) {
+  try {
+    const history: any[] = JSON.parse(localStorage.getItem('atlas_test_history') || '[]');
+
+    // Find an existing open practice session for this topic started today
+    const todayPrefix = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+    const existingIdx = history.findLastIndex(
+      (s: any) =>
+        s.setType === 'practice' &&
+        s.topic === topic &&
+        s.timestamp?.startsWith(todayPrefix)
+    );
+
+    if (existingIdx >= 0) {
+      // Append to existing session
+      const session = history[existingIdx];
+      const responses: any[] = session.results?.responses ?? [];
+      responses.push(response);
+      const correct = responses.filter((r: any) => r.isCorrect).length;
+      history[existingIdx] = {
+        ...session,
+        results: {
+          ...session.results,
+          responses,
+          accuracy: Math.round((correct / responses.length) * 100),
+          completed: true,
+        },
+      };
+    } else {
+      // Start a new practice session
+      history.push({
+        id: `practice_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        setType: 'practice',
+        topic,
+        course,
+        results: {
+          completed: true,
+          responses: [response],
+          accuracy: response.isCorrect ? 100 : 0,
+        },
+      });
+    }
+
+    localStorage.setItem('atlas_test_history', JSON.stringify(history));
+    window.dispatchEvent(new Event('atlas_usage_updated'));
+  } catch (e) {
+    console.error('Failed to save practice response:', e);
+  }
+}
+
 // ─── Text Renderers ───────────────────────────────────────────────────────────
-// Coerce option values that are pure math fragments into a single inline math block
 const sanitizeOption = (text: string): string => {
   const trimmed = text.trim();
-  // If it contains newlines and looks like broken LaTeX, collapse into one $...$ block
   if (trimmed.includes('\n') && !trimmed.startsWith('$')) {
     const joined = trimmed.split('\n').map(l => l.trim()).filter(Boolean).join(' ');
     return `$${joined}$`;
@@ -141,30 +204,48 @@ export function PracticeQuestion({ topic }: { topic: string }) {
 
   const handleVerify = async () => {
     if (!selectedAnswer || !currentQuestion) return;
+
     const fmt = currentQuestion.answerFormat;
+    let correct = false;
+    let feedback = '';
+
     if (fmt === 'multiple-choice' || fmt === 'true-false') {
-      setIsCorrect(selectedAnswer === currentQuestion.correctAnswer);
-      setAiFeedback('');
-      setShowResult(true);
-      return;
+      correct = selectedAnswer === currentQuestion.correctAnswer;
+    } else {
+      setGrading(true);
+      try {
+        const result = await gradeWithAI(
+          currentQuestion.questionText,
+          currentQuestion.correctAnswer,
+          selectedAnswer,
+          fmt === 'solution' ? 'solution' : 'identification'
+        );
+        correct = result.isCorrect;
+        feedback = result.feedback;
+      } catch {
+        correct = false;
+        feedback = 'Grading unavailable.';
+      } finally {
+        setGrading(false);
+      }
     }
-    setGrading(true);
-    try {
-      const result = await gradeWithAI(
-        currentQuestion.questionText,
-        currentQuestion.correctAnswer,
-        selectedAnswer,
-        fmt === 'solution' ? 'solution' : 'identification'
-      );
-      setIsCorrect(result.isCorrect);
-      setAiFeedback(result.feedback);
-    } catch {
-      setIsCorrect(null);
-      setAiFeedback('Grading unavailable.');
-    } finally {
-      setGrading(false);
-      setShowResult(true);
-    }
+
+    setIsCorrect(correct);
+    setAiFeedback(feedback);
+    setShowResult(true);
+
+    // ── Save to localStorage after every answered question ──
+    const course = Array.isArray(selectedCourse) ? selectedCourse[0] : (selectedCourse ?? '');
+    savePracticeResponse(topic, course, {
+      questionText: currentQuestion.questionText,
+      answerFormat: fmt,
+      userAnswer: selectedAnswer,
+      correctAnswer: currentQuestion.correctAnswer,
+      explanation: currentQuestion.explanation ?? '',
+      isCorrect: correct,
+      aiFeedback: feedback,
+      rule: currentQuestion.rule ?? currentQuestion.topic ?? topic,
+    });
   };
 
   if (loading) return (
