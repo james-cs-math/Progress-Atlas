@@ -1,5 +1,5 @@
 const GROQ_API_KEY = "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";
-const GROQ_URL = "https://api.groq.com/openai/v1";
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useFilters } from '../lib/FilterContext';
@@ -155,28 +155,29 @@ function pearsonCorrelation(xs: number[], ys: number[]): number {
 
 // ─── Groq API ─────────────────────────────────────────────────────────────────
 async function callGroqAPI(messages: ChatMessage[], systemPrompt: string): Promise<string> {
-  const response = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${GROQ_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'llama-3.1-8b-instant',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...messages.map(m => ({ role: m.role, content: m.content })),
-      ],
-      temperature: 0.4,
-      max_tokens: 1024,
-    }),
-  });
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error((err as any)?.error?.message ?? `Groq API error ${response.status}`);
+  try {
+    const response = await fetch(GROQ_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'llama-3.1-8b-instant',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...messages.map(m => ({ role: m.role, content: m.content })),
+        ],
+        temperature: 0.4,
+        max_tokens: 1024,
+      }),
+    });
+    if (!response.ok) throw new Error(`Groq API error ${response.status}`);
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content ?? 'No response from AI.';
+  } catch {
+    return 'Atlas is temporarily unavailable. Please try again in a moment.';
   }
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content ?? 'No response from AI.';
 }
 
 function buildSystemPrompt(resp: TestResponse): string {
@@ -384,7 +385,7 @@ export function DashboardSimplified() {
       scrollToBottom(chatId);
     } catch (e: any) {
       updateChat(chatId, {
-        thread: [{ role: 'assistant', content: `⚠️ ${e.message}` }],
+        thread: [{ role: 'assistant', content: 'Atlas is temporarily unavailable. Please try again in a moment.' }],
         isThinking: false,
         isOpen: true,
       });
@@ -409,7 +410,7 @@ export function DashboardSimplified() {
       scrollToBottom(chatId);
     } catch (e: any) {
       updateChat(chatId, {
-        thread: [...updatedThread, { role: 'assistant', content: `⚠️ ${e.message}` }],
+        thread: [...updatedThread, { role: 'assistant', content: 'Atlas is temporarily unavailable. Please try again in a moment.' }],
         isThinking: false,
       });
     }
@@ -433,7 +434,7 @@ export function DashboardSimplified() {
   const sessionKey = (session: TestSession) => session.id ?? session.timestamp;
   const toggleSession = (key: string) => setExpandedSession(prev => prev === key ? null : key);
 
-  // ─── Roadmap logic ─────────────────────────────────────────────────────────
+  // ─── Roadmap logic ────────────────────────────────────────────────────────
   const roadmapReadiness = useMemo(() => {
     if (completedData.length === 0) return null;
 
@@ -465,7 +466,7 @@ export function DashboardSimplified() {
     return { score, level, weakTopics, developingTopics, masteredTopics, actions };
   }, [completedData, ruleMap, stats]);
 
-  // ─── Radar data ────────────────────────────────────────────────────────────
+  // ─── Radar data ───────────────────────────────────────────────────────────
   const radarData = useMemo(() => {
     return ruleMap.slice(0, 6).map(r => ({
       topic: r.name.length > 14 ? r.name.slice(0, 14) + '…' : r.name,
