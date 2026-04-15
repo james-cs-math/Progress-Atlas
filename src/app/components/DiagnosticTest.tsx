@@ -8,7 +8,7 @@ import { aiService } from '../../aiService';
 import { motion, AnimatePresence } from 'framer-motion';
 
 // ─── AI Grader (Groq) ─────────────────────────────────────────────────────────
-const GROQ_API_KEY = "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";
+const GROQ_API_KEY = "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";
 const GROQ_URL = "https://api.groq.com/openai/v1";
 
 async function gradeWithAI(
