@@ -1,4 +1,4 @@
-const GROQ_API_KEY = "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";
+const GROQ_API_KEY = "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";
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
